@@ -248,6 +248,40 @@ test("provisions a user with a one-time invite", async ({ page }) => {
   expect(removed.status()).toBe(200);
 });
 
+test("stores a per-host registry credential without returning its secret", async ({ page }) => {
+  await login(page);
+  const hostsResponse = await page.request.get("/api/hosts");
+  expect(hostsResponse.status()).toBe(200);
+  const hosts = await hostsResponse.json();
+  const localHost = hosts.find((host: { kind: string }) => host.kind === "local");
+  expect(localHost).toBeTruthy();
+
+  const registry = `registry-${Date.now()}.example.com`;
+  const created = await page.request.post("/api/registries", {
+    data: { registry, username: "e2e-user", secret: "e2e-registry-secret", hostIds: [localHost.id] },
+  });
+  expect(created.status()).toBe(200);
+  const credential = await created.json();
+  expect(JSON.stringify(credential)).not.toContain("e2e-registry-secret");
+  expect(credential.registry).toBe(registry);
+  expect(credential.hosts.map((host: { id: string }) => host.id)).toEqual([localHost.id]);
+
+  const duplicate = await page.request.post("/api/registries", {
+    data: { registry, username: "other", secret: "other-secret", hostIds: [localHost.id] },
+  });
+  expect(duplicate.status()).toBe(422);
+  expect((await duplicate.json()).code).toBe("registry_host_conflict");
+
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "Registries" }).click();
+  await expect(page.getByRole("cell", { name: registry, exact: true })).toBeVisible();
+
+  const removed = await page.request.delete(`/api/registries/${credential.id}`);
+  expect(removed.status()).toBe(200);
+  const remaining = await (await page.request.get("/api/registries")).json();
+  expect(remaining.some((entry: { id: string }) => entry.id === credential.id)).toBe(false);
+});
+
 test("rejects an anonymous API request", async ({ page }) => {
   const response = await page.request.get("/api/stacks");
   expect(response.status()).toBe(401);

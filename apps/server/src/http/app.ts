@@ -35,6 +35,14 @@ import {
 } from "../lib/docker.ts";
 import { listLogSources } from "../lib/logSources.ts";
 import { getSettingsView, updateSettings } from "../lib/settings.ts";
+import {
+  applyManagerRegistryConfig,
+  buildDockerConfigForHost,
+  createRegistryCredential,
+  deleteRegistryCredential,
+  listRegistryCredentials,
+  updateRegistryCredential,
+} from "../lib/registries.ts";
 import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext } from "../lib/autoUpdateState.ts";
 import { manualAutoUpdateConfig, resolveAutoUpdate } from "../lib/autoUpdateConfig.ts";
 import { readGlobalAutoUpdate } from "../lib/globalAutoUpdate.ts";
@@ -84,11 +92,13 @@ import {
   finishOperation,
   getOperation,
   listOperations,
+  reconcileSelfUpdates,
   refreshStackAfterOperation,
   startAutoUpdateOperation,
   startComposeOperation,
   startDeleteOperation,
 } from "../lib/operations.ts";
+import { initializeSelfInfo } from "../lib/selfInfo.ts";
 import { getStats } from "../lib/docker.ts";
 import {
   addPendingWorker,
@@ -1258,6 +1268,10 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
       resumed: !newSecret,
       managerVersion: config.version,
     });
+    sendWorker(ws, {
+      type: "registry.auth",
+      config: buildDockerConfigForHost(hostId),
+    });
     return;
   }
 
@@ -1521,6 +1535,9 @@ export async function createApp() {
   await seedAdminFromEnvironment();
   await syncStacks();
   await getHostInventory(LOCAL_HOST_ID);
+  applyManagerRegistryConfig();
+  await initializeSelfInfo();
+  await reconcileSelfUpdates();
 
   if (getRecentAudit(1).length === 0) {
     const systemActor: Actor = { type: "user", id: "system", name: "system", role: "admin", scopes: ["*"] };
@@ -1536,6 +1553,9 @@ export async function createApp() {
   }, 30_000);
 
   recoverInterruptedBackups();
+  setInterval(() => {
+    void reconcileSelfUpdates();
+  }, 10_000);
   startAutoUpdateScheduler();
   startUpdateCheckScheduler();
   startBackupScheduler();
@@ -2643,6 +2663,81 @@ export async function createApp() {
         name: t.String({ maxLength: 80 }),
         password: t.String({ minLength: 8, maxLength: 200 }),
       }),
+    })
+    .get("/api/registries", async ({ request }) => {
+      const actor = await actorForScope(request, "settings:read");
+      assertInstanceTarget(actor);
+      return listRegistryCredentials();
+    })
+    .post("/api/registries", async ({ request, body }) => {
+      const actor = await actorForScope(request, "settings:write");
+      assertInstanceTarget(actor);
+      const credential = createRegistryCredential({
+        registry: body.registry,
+        username: body.username,
+        secret: body.secret,
+        hostIds: body.hostIds,
+        enabled: body.enabled,
+      });
+      recordAudit({
+        actor,
+        action: "registry.create",
+        resourceType: "registry",
+        resourceId: credential.id,
+        metadata: { registry: credential.registry, hostIds: credential.hostIds },
+        request,
+      });
+      return credential;
+    }, {
+      body: t.Object({
+        registry: t.String({ maxLength: 300 }),
+        username: t.String({ maxLength: 300 }),
+        secret: t.Optional(t.String({ maxLength: 2000 })),
+        hostIds: t.Array(t.String({ maxLength: 100 })),
+        enabled: t.Optional(t.Boolean()),
+      }),
+    })
+    .patch("/api/registries/:id", async ({ request, params, body }) => {
+      const actor = await actorForScope(request, "settings:write");
+      assertInstanceTarget(actor);
+      const credential = updateRegistryCredential(params.id, {
+        registry: body.registry,
+        username: body.username,
+        secret: body.secret,
+        hostIds: body.hostIds,
+        enabled: body.enabled,
+      });
+      recordAudit({
+        actor,
+        action: "registry.update",
+        resourceType: "registry",
+        resourceId: credential.id,
+        metadata: { registry: credential.registry, hostIds: credential.hostIds },
+        request,
+      });
+      return credential;
+    }, {
+      body: t.Object({
+        registry: t.Optional(t.String({ maxLength: 300 })),
+        username: t.Optional(t.String({ maxLength: 300 })),
+        secret: t.Optional(t.String({ maxLength: 2000 })),
+        hostIds: t.Optional(t.Array(t.String({ maxLength: 100 }))),
+        enabled: t.Optional(t.Boolean()),
+      }),
+    })
+    .delete("/api/registries/:id", async ({ request, params }) => {
+      const actor = await actorForScope(request, "settings:write");
+      assertInstanceTarget(actor);
+      const credential = deleteRegistryCredential(params.id);
+      recordAudit({
+        actor,
+        action: "registry.delete",
+        resourceType: "registry",
+        resourceId: credential.id,
+        metadata: { registry: credential.registry, hostIds: credential.hostIds },
+        request,
+      });
+      return { ok: true };
     })
     .get("/api/settings", async ({ request }) => {
       await actorForScope(request, "settings:read");

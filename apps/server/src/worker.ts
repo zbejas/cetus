@@ -16,7 +16,7 @@ import {
   listVolumes,
 } from "./lib/docker.ts";
 import { runAutoUpdate } from "./lib/autoUpdateRunner.ts";
-import { checkComposeUpdates } from "./lib/updateCheck.ts";
+import { checkComposeUpdates, clearRemoteDigestCache } from "./lib/updateCheck.ts";
 
 const managerUrl = process.env.CETUS_MANAGER_URL ?? "ws://127.0.0.1:3000/api/ws/worker";
 const enrollToken = process.env.CETUS_ENROLL_TOKEN;
@@ -24,12 +24,15 @@ const workerName = process.env.CETUS_WORKER_NAME ?? `worker-${crypto.randomUUID(
 const stacksDir = path.resolve(process.env.CETUS_WORKER_STACKS_DIR ?? "/opt/stacks");
 const dataDir = path.resolve(process.env.CETUS_WORKER_DATA_DIR ?? "./data-worker");
 const trashDir = path.join(dataDir, "trash");
+const dockerConfigDir = path.join(dataDir, "docker");
 const credentialFile = path.join(dataDir, "worker.json");
 const composeNames = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 
 fs.mkdirSync(stacksDir, { recursive: true });
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(trashDir, { recursive: true });
+fs.mkdirSync(dockerConfigDir, { recursive: true, mode: 0o700 });
+process.env.DOCKER_CONFIG = dockerConfigDir;
 
 interface StoredCredential {
   hostId: string;
@@ -440,6 +443,23 @@ function handleComposeWrite(message: any) {
   }
 }
 
+function applyRegistryAuth(message: any) {
+  try {
+    const config = message.config && typeof message.config === "object"
+      ? message.config
+      : { auths: {} };
+    const file = path.join(dockerConfigDir, "config.json");
+    const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(temp, file);
+    fs.chmodSync(file, 0o600);
+    process.env.DOCKER_CONFIG = dockerConfigDir;
+    clearRemoteDigestCache();
+  } catch (error) {
+    console.error("[cetus-worker] could not apply registry credentials", error);
+  }
+}
+
 function handleMetadataWrite(message: any) {
   const requestId = String(message.requestId);
   try {
@@ -673,6 +693,10 @@ function connect() {
     }
     if (message.type === "container.action") {
       void handleContainerAction(message);
+      return;
+    }
+    if (message.type === "registry.auth") {
+      applyRegistryAuth(message);
       return;
     }
     if (message.type === "metadata.write") {

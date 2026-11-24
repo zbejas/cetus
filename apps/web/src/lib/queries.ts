@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type UserUpdateInput } from "./api";
-import type { StackMetadata } from "@shared/types";
+import type { RegistryCredentialInput, StackMetadata } from "@shared/types";
 
 export const queryKeys = {
   me: ["me"] as const,
@@ -18,6 +18,7 @@ export const queryKeys = {
   invites: ["invites"] as const,
   invite: (token: string) => ["invite", token] as const,
   settings: ["settings"] as const,
+  registries: ["registries"] as const,
   backups: ["backups"] as const,
   authConfig: ["auth-config"] as const,
   notificationChannels: ["notification-channels"] as const,
@@ -342,6 +343,33 @@ export function useUpdateSettings() {
       client.invalidateQueries({ queryKey: queryKeys.settings });
       client.invalidateQueries({ queryKey: queryKeys.dashboard });
       client.invalidateQueries({ queryKey: ["stacks"] });
+    },
+  });
+}
+
+export function useRegistries() {
+  return useQuery({ queryKey: queryKeys.registries, queryFn: api.registries });
+}
+
+export function useSaveRegistry() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id?: string; body: RegistryCredentialInput | Partial<RegistryCredentialInput> }) =>
+      input.id
+        ? api.updateRegistry(input.id, input.body)
+        : api.createRegistry(input.body as RegistryCredentialInput),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: queryKeys.registries });
+    },
+  });
+}
+
+export function useDeleteRegistry() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.deleteRegistry,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: queryKeys.registries });
     },
   });
 }

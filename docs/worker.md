@@ -82,6 +82,7 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 | Manager to worker | `stack.logs.stop` | Stop a live stack log process |
 | Worker to manager | `stack.logs.end` | Stream finished |
 | Manager to worker | `snapshot.request` | Force a fresh snapshot |
+| Manager to worker | `registry.auth` | Docker `auths` object for the credentials that target this worker |
 
 ## What works
 
@@ -98,6 +99,7 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - Remote stack delete. The worker runs `compose down`, snapshots the compose file, and moves the stack directory to `data/trash` on the worker. The manager removes the index row after the operation succeeds.
 - Managed container start, stop, restart, pause, unpause, and remove through `container.action` and `container.actioned`. The worker rejects standalone containers without a Compose project label.
 - Remote registry digest checks and scheduled auto-updates through `update-check` and `auto-update`.
+- Per-host registry credentials through `registry.auth`. The worker writes `<data>/docker/config.json` with mode `0600`, points `DOCKER_CONFIG` at that directory, and uses it for digest checks and image pulls. The manager sends the full replacement at enrollment and whenever a credential changes.
 - Remote stacks appear in the dashboard, stacks table, host page, and MCP list tools, except the Cetus worker stack itself.
 
 ## What is not in this slice
@@ -117,6 +119,8 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - A stack whose name or Compose project is `cetus-worker` is hidden from fleet lists, registry sweeps, and bulk updates. Keep the `compose/worker.yaml` project name when changing the worker recipe.
 - The manager filters host and stack results for API keys with host or stack targets. Keep `keyRestrictions` and `filterHostsForActor` / `filterStacksForActor` in sync when adding routes.
 - The worker shares the Docker socket with its own Cetus container. Do not mount a remote Docker socket over a network.
+- The worker Docker config contains base64 registry credentials, not sealed values. Keep the worker data directory private and back it up as a secret.
+- Registry auth travels over the worker WebSocket. Use `wss://` outside local development; the manager sends credentials only after the worker authenticates with its secret.
 
 ## Related docs
 

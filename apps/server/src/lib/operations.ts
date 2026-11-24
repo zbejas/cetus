@@ -20,11 +20,12 @@ import {
   snapshotCurrent,
 } from "./stacks.ts";
 import { runAutoUpdate } from "./autoUpdateRunner.ts";
-import { recordAutoUpdateRun, refreshAutoUpdateNext } from "./autoUpdateState.ts";
+import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext } from "./autoUpdateState.ts";
 import { manualAutoUpdateConfig, resolveAutoUpdate } from "./autoUpdateConfig.ts";
 import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
 import { markAutoUpdateApplied } from "./updateCheckState.ts";
 import { notifyEvent } from "./notifications.ts";
+import { getSelfInfo, isSelfUpdateTarget } from "./selfInfo.ts";
 
 const buffers = new Map<string, string>();
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -141,6 +142,286 @@ export async function refreshStackAfterOperation(stackId: string, deployed: bool
   }).where(eq(schema.stack.id, stackId)).run();
 }
 
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function selfUpdateKey(operationId: string) {
+  return `selfupdate:${operationId}`;
+}
+
+function removeSelfUpdateTag(tag: string | undefined) {
+  if (!tag) return;
+  Bun.spawnSync(["docker", "rmi", tag], { stdout: "pipe", stderr: "pipe" });
+}
+
+function buildSelfUpdateScript(input: {
+  operationId: string;
+  dir: string;
+  projectName: string;
+  serviceName: string;
+  imageRef: string;
+  backupTag: string;
+  statusFile: string;
+  logFile: string;
+  services?: string[];
+  healthGraceSeconds: number;
+}) {
+  const quote = shellQuote;
+  const pullTargets = input.services?.length ? ` ${input.services.map(quote).join(" ")}` : "";
+  return `set -u
+OUT=${quote(input.logFile)}
+STATUS=${quote(input.statusFile)}
+: > "$OUT"
+finish() {
+  code=$1
+  status=$2
+  printf '{"operationId":"${input.operationId}","status":"%s","exitCode":%s}\\n' "$status" "$code" > "$STATUS"
+  exit "$code"
+}
+cd ${quote(input.dir)} >> "$OUT" 2>&1 || finish 1 failed
+docker compose -p ${quote(input.projectName)} pull${pullTargets} >> "$OUT" 2>&1 || finish $? failed
+docker compose -p ${quote(input.projectName)} up -d --remove-orphans >> "$OUT" 2>&1 || {
+  echo "[cetus] compose up failed. Restoring the previous image." >> "$OUT"
+  docker tag ${quote(input.backupTag)} ${quote(input.imageRef)} >> "$OUT" 2>&1 || true
+  docker compose -p ${quote(input.projectName)} up -d --force-recreate >> "$OUT" 2>&1 || true
+  finish 1 failed
+}
+for i in $(seq 1 ${Math.max(10, Math.min(input.healthGraceSeconds, 600))}); do
+  cid=$(docker compose -p ${quote(input.projectName)} ps -q ${quote(input.serviceName)} 2>/dev/null | head -n 1)
+  if [ -n "$cid" ]; then
+    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)
+    if [ "$health" = "healthy" ] || [ "$health" = "running" ]; then
+      finish 0 success
+    fi
+  fi
+  sleep 1
+done
+echo "[cetus] New container did not become healthy. Restoring the previous image." >> "$OUT"
+docker tag ${quote(input.backupTag)} ${quote(input.imageRef)} >> "$OUT" 2>&1 || true
+docker compose -p ${quote(input.projectName)} up -d --force-recreate >> "$OUT" 2>&1 || true
+finish 1 failed
+`;
+}
+
+function startSelfUpdateOperation(
+  stackRow: NonNullable<ReturnType<typeof getStackRow>>,
+  actor: Actor,
+  request?: Request,
+  options: { trigger?: "schedule" | "manual" | "bulk"; config?: AutoUpdateConfig; trackAutoUpdate?: boolean } = {},
+): Operation {
+  const self = getSelfInfo();
+  if (!self) throw new Error("Cetus could not identify its own container for a self-update.");
+  const running = db.select().from(schema.operation).where(and(
+    eq(schema.operation.stackId, stackRow.id),
+    eq(schema.operation.status, "running"),
+  )).get();
+  if (running) throw new Error("Another operation is already running for this stack.");
+
+  const operation = createOperation({
+    type: "update",
+    hostId: stackRow.hostId,
+    stackId: stackRow.id,
+    stackName: stackRow.name,
+    actor,
+  });
+  if (options.trackAutoUpdate) {
+    recordAutoUpdateRun(stackRow.id, "running", operation.id);
+  }
+  recordAudit({
+    actor,
+    action: options.trackAutoUpdate ? "stack.auto-update" : "update",
+    resourceType: "stack",
+    resourceId: stackRow.id,
+    hostId: stackRow.hostId,
+    stackId: stackRow.id,
+    metadata: {
+      operationId: operation.id,
+      selfUpdate: true,
+      trigger: options.trigger ?? "manual",
+      ...(options.config ? { cron: options.config.cron, timezone: options.config.timezone } : {}),
+    },
+    request,
+  });
+
+  const statusFile = path.join(config.operationsDir, `self-update-${operation.id}.json`);
+  const logFile = path.join(config.operationsDir, `self-update-${operation.id}.log`);
+  const helperName = `cetus-self-update-${operation.id}`;
+  const backupTag = `cetus-self-update:${operation.id}`;
+  const settingKey = selfUpdateKey(operation.id);
+
+  const backup = Bun.spawnSync(["docker", "tag", self.imageRef, backupTag], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (backup.exitCode !== 0) {
+    const error = backup.stderr.toString().trim() || backup.stdout.toString().trim() || "Docker could not save a rollback tag.";
+    appendOutput(operation.id, `[cetus] Self-update could not save the current image: ${error}\n`);
+    finishOperation(operation.id, "failed", 1);
+    if (options.trackAutoUpdate) recordAutoUpdateRun(stackRow.id, "failed", operation.id);
+    return operation;
+  }
+
+  const meta = {
+    operationId: operation.id,
+    stackId: stackRow.id,
+    helperName,
+    backupTag,
+    statusFile,
+    logFile,
+  };
+  const now = new Date();
+  db.insert(schema.setting)
+    .values({ key: settingKey, value: JSON.stringify(meta), updatedAt: now })
+    .onConflictDoUpdate({
+      target: schema.setting.key,
+      set: { value: JSON.stringify(meta), updatedAt: now },
+    })
+    .run();
+
+  const dockerConfig = process.env.DOCKER_CONFIG ?? path.join(config.dataDir, "docker");
+  const result = Bun.spawnSync([
+    "docker",
+    "run",
+    "--rm",
+    "-d",
+    "--name",
+    helperName,
+    "--volumes-from",
+    self.containerId,
+    "-e",
+    `DOCKER_CONFIG=${dockerConfig}`,
+    "--entrypoint",
+    "sh",
+    self.imageRef,
+    "-lc",
+    buildSelfUpdateScript({
+      operationId: operation.id,
+      dir: stackRow.dir,
+      projectName: stackRow.projectName,
+      serviceName: self.service,
+      imageRef: self.imageRef,
+      backupTag,
+      statusFile,
+      logFile,
+      services: options.config?.services,
+      healthGraceSeconds: options.config?.healthGraceSeconds ?? 90,
+    }),
+  ], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  if (result.exitCode !== 0) {
+    db.delete(schema.setting).where(eq(schema.setting.key, settingKey)).run();
+    const error = result.stderr.toString().trim() || result.stdout.toString().trim() || "The helper container did not start.";
+    appendOutput(operation.id, `[cetus] Self-update helper failed to start: ${error}\n`);
+    finishOperation(operation.id, "failed", 1);
+    removeSelfUpdateTag(backupTag);
+    if (options.trackAutoUpdate) recordAutoUpdateRun(stackRow.id, "failed", operation.id);
+  } else {
+    appendOutput(
+      operation.id,
+      "[cetus] Cetus is running in this stack. The update continues in a detached helper container so recreating the manager does not interrupt it.\n",
+    );
+  }
+  return operation;
+}
+
+let reconcilingSelfUpdates = false;
+
+export async function reconcileSelfUpdates() {
+  if (reconcilingSelfUpdates) return;
+  reconcilingSelfUpdates = true;
+  try {
+    await reconcileSelfUpdatesOnce();
+  } finally {
+    reconcilingSelfUpdates = false;
+  }
+}
+
+async function reconcileSelfUpdatesOnce() {
+  const rows = db.select().from(schema.setting).all().filter((row) => row.key.startsWith("selfupdate:"));
+  for (const row of rows) {
+    let meta: {
+      operationId?: string;
+      stackId?: string;
+      helperName?: string;
+      backupTag?: string;
+      statusFile?: string;
+      logFile?: string;
+    };
+    try {
+      meta = JSON.parse(row.value) as typeof meta;
+    } catch {
+      db.delete(schema.setting).where(eq(schema.setting.key, row.key)).run();
+      continue;
+    }
+    if (!meta.operationId || !meta.helperName || !meta.statusFile || !meta.logFile) {
+      removeSelfUpdateTag(meta.backupTag);
+      db.delete(schema.setting).where(eq(schema.setting.key, row.key)).run();
+      continue;
+    }
+
+    if (!fs.existsSync(meta.statusFile)) {
+      const inspect = Bun.spawnSync([
+        "docker",
+        "inspect",
+        "--format",
+        "{{.State.Status}}",
+        meta.helperName,
+      ], { stdout: "pipe", stderr: "pipe" });
+      const helperStatus = inspect.exitCode === 0 ? inspect.stdout.toString().trim() : "missing";
+      if (helperStatus === "running" || helperStatus === "created" || helperStatus === "restarting") continue;
+      const operation = getOperation(meta.operationId);
+      if (operation?.status === "running") {
+        appendOutput(meta.operationId, "\n[cetus] Self-update helper exited before reporting a status.\n");
+        finishOperation(meta.operationId, "failed", 1);
+        if (operation.stackId) await refreshStackAfterOperation(operation.stackId, false);
+      }
+      removeSelfUpdateTag(meta.backupTag);
+      db.delete(schema.setting).where(eq(schema.setting.key, row.key)).run();
+      continue;
+    }
+
+    let status: { status?: string; exitCode?: number } = {};
+    try {
+      status = JSON.parse(fs.readFileSync(meta.statusFile, "utf8")) as typeof status;
+    } catch {
+      status = {};
+    }
+    const success = status.status === "success";
+    const operation = getOperation(meta.operationId);
+    if (operation?.status === "running") {
+      const log = fs.existsSync(meta.logFile) ? fs.readFileSync(meta.logFile, "utf8") : "";
+      if (log) {
+        db.update(schema.operation)
+          .set({ output: log.length > 300_000 ? log.slice(log.length - 300_000) : log })
+          .where(eq(schema.operation.id, meta.operationId))
+          .run();
+      }
+      finishOperation(meta.operationId, success ? "success" : "failed", typeof status.exitCode === "number" ? status.exitCode : null);
+      if (operation.stackId) {
+        const stackRow = getStackRow(operation.stackId);
+        if (stackRow) {
+          const autoState = readAutoUpdateState(operation.stackId);
+          if (autoState.lastOperationId === operation.id) {
+            const config = resolveAutoUpdate(readMetadata(stackRow), readGlobalAutoUpdate()).config;
+            recordAutoUpdateRun(operation.stackId, success ? "success" : "failed", operation.id);
+            refreshAutoUpdateNext(operation.stackId, config);
+            if (success) markAutoUpdateApplied(operation.stackId, config?.services, config?.excludeServices);
+          }
+        }
+        await refreshStackAfterOperation(operation.stackId, success);
+      }
+    }
+    removeSelfUpdateTag(meta.backupTag);
+    db.delete(schema.setting).where(eq(schema.setting.key, row.key)).run();
+    fs.rmSync(meta.statusFile, { force: true });
+    fs.rmSync(meta.logFile, { force: true });
+  }
+}
+
 export interface ComposeOperationInput {
   type: OperationType;
   stackId: string;
@@ -156,6 +437,9 @@ export function startComposeOperation(input: ComposeOperationInput): Operation {
   const stackRow = getStackRow(input.stackId);
   if (!stackRow) throw new Error("Stack not found");
   const owner = getHostRow(stackRow.hostId);
+  if (input.type === "update" && isSelfUpdateTarget(stackRow)) {
+    return startSelfUpdateOperation(stackRow, input.actor, input.request, { trigger: "manual" });
+  }
   if (owner?.kind !== "worker" && ["deploy", "update", "down"].includes(input.type)) {
     try {
       snapshotCurrent(stackRow, input.type, input.actor.name);
@@ -268,6 +552,13 @@ export function startAutoUpdateOperation(
   const global = readGlobalAutoUpdate();
   const resolved = options.config ?? resolveAutoUpdate(metadata, global).config;
   const config = resolved ?? manualAutoUpdateConfig(metadata, global);
+  if (isSelfUpdateTarget(stackRow)) {
+    return startSelfUpdateOperation(stackRow, actor, request, {
+      trigger: options.trigger ?? "manual",
+      config,
+      trackAutoUpdate: true,
+    });
+  }
   const running = db.select().from(schema.operation).where(and(
     eq(schema.operation.stackId, stackId),
     eq(schema.operation.status, "running"),

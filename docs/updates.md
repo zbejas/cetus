@@ -10,6 +10,8 @@ Cetus owns the update loop for every stack. A registry digest sweep compares eac
 |---|---|
 | `apps/server/src/lib/composeConfig.ts` | Resolved `docker compose config` service definitions with raw YAML fallback |
 | `apps/server/src/lib/updateCheck.ts` | Local and remote digest lookup, digest comparison, worker-callable check |
+| `apps/server/src/lib/registries.ts` | Registry normalization, sealed credentials, per-host Docker config, cache invalidation |
+| `apps/server/src/lib/selfInfo.ts` | Manager container identity, Compose project, and image for self-update |
 | `apps/server/src/lib/updateCheckState.ts` | SQLite cache, previous-result merge, manager orchestration, applied-update bookkeeping |
 | `apps/server/src/lib/autoUpdateConfig.ts` | Global and per-stack validation, inheritance, and service selection rules |
 | `apps/server/src/lib/globalAutoUpdate.ts` | `settings.autoUpdate` read, write, and next-run refresh |
@@ -42,10 +44,11 @@ compose services -> running container image -> local RepoDigests
 - Local digests come from `docker image inspect --format '{{json .RepoDigests}}'`. The registry digest comes from `docker buildx imagetools inspect <image> --format '{{json .Manifest}}'`.
 - `hasDigestUpdate` reports an update only when a remote digest exists, a local digest exists, and no local digest matches. Missing data is never treated as an update.
 - Remote lookups are cached in-process for 10 minutes per image, so several stacks sharing an image produce one registry call.
+- Authenticated lookups use the Docker config from Settings > Registries. The manager points `DOCKER_CONFIG` at `<data>/docker`, and each worker keeps its own `0600` config under its data directory. A credential change clears the remote cache and pushes a fresh config to connected workers.
 - A service pinned as `repo@sha256:...` is always current. A service with a `build:` key skips registry comparison because there is no registry tag to compare.
 - Results are stored as JSON under `updatecheck:<stackId>` in the `setting` table. On a registry error the previous digests are merged back, so a transient failure does not erase the last known state.
 - The manager sweeps stacks 15 seconds after start and every six hours. A stack with a cached check newer than one hour is skipped so restarts do not hammer registries. A failed stack check does not abort the sweep.
-- Cetus worker stacks are hidden from the fleet list, dashboard, registry sweep, and bulk update. Their direct stack URL still works, but Cetus does not offer to update the process that runs Cetus itself.
+- Cetus worker stacks are hidden from the fleet list, dashboard, registry sweep, and bulk update. Their direct stack URL still works.
 
 ### Schedule and inheritance
 
@@ -89,6 +92,25 @@ snapshot -> pull selected services -> compose up -d
 - The manager sends `compose.write` for compose and env edits. The worker validates YAML, snapshots the old compose file, writes atomically, and acknowledges with `compose.written`.
 - Worker results and operation status are stored in the manager's SQLite database, not on the worker.
 
+### Manager self-update
+
+The manager stack is a normal stack, so the Update button and auto-update can target the container that runs Cetus. A direct `compose up` from inside that container would kill itself and lose the operation, so Cetus detects its own Compose project and uses a detached helper.
+
+```text
+manager detects self container -> writes selfupdate:<operationId> row
+  -> docker run --rm -d --volumes-from <manager> <manager image> sh
+  -> compose pull -> compose up -d --remove-orphans
+  -> health gate -> status file
+manager restarts -> reconcileSelfUpdates reads the status file -> operation finishes
+```
+
+- `initializeSelfInfo` reads the container hostname, Compose project, service, and image reference once at startup.
+- Before starting the helper, Cetus tags the current image as `cetus-self-update:<operationId>`. Rollback retags that backup to the stack image, which also works when the registry manifest is multi-arch. The tag is removed after the operation is reconciled.
+- The helper shares the manager's volumes, so the stack directory and data directory are available. It runs the same pull, `compose up`, health gate, and rollback sequence as a normal local update.
+- The helper writes `{"status":"success"|"failed","exitCode":...}` under the operations directory. The new manager reconciles the row at startup and every 10 seconds.
+- A failed helper start marks the operation failed immediately. A helper that exits without a status file also fails the operation.
+- Self-update recreates the manager container. Open log streams and the current browser connection drop, then reconnect after the new container is healthy.
+
 ### API
 
 | Route | Scope | Behavior |
@@ -105,7 +127,7 @@ snapshot -> pull selected services -> compose up -d
 ## Gotchas & invariants
 
 - `docker buildx` is required for registry digests. Without the plugin the check reports `Registry digest lookup requires the Docker buildx plugin`, and Cetus does not guess an update. The manager and worker images install `docker-cli-buildx` next to the Compose plugin.
-- Docker Hub limits unauthenticated manifest requests per IP. Remote results are cached for 10 minutes and errors preserve the previous digest. An update check can still return an error during a rate limit; the UI shows the failed count instead of claiming the image is current. Run `docker login` on the host to let buildx use registry credentials and raise the limit.
+- Docker Hub and GHCR limit unauthenticated manifest requests. Remote results are cached for 10 minutes and errors preserve the previous digest. An update check can still return an error during a rate limit; the UI shows the failed count instead of claiming the image is current. Add a credential in Settings > Registries and target the host that runs the stack. A host `docker login` does not reach the Cetus container because `~/.docker` is not mounted.
 - A manual Run now saves the dialog state first. The run uses the saved stack override, or the fleet defaults forced on when the stack inherits them.
 - The auto-update scheduler only reads saved metadata. Editing `cetus.json` on disk requires a stack scan or a metadata save before the new schedule is visible.
 - Rollback restores files and images, not application data. A database migration that runs on start is not reversed.

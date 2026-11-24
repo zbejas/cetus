@@ -11,6 +11,8 @@ import type {
   HostSummary,
   LogSource,
   Operation,
+  RegistryCredentialInput,
+  RegistryCredentialSummary,
   SessionUser,
   StackDetail,
   StackMetadata,
@@ -356,6 +358,19 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  registries: () => request<RegistryCredentialSummary[]>("/api/registries"),
+  createRegistry: (body: RegistryCredentialInput) =>
+    request<RegistryCredentialSummary>("/api/registries", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateRegistry: (id: string, body: Partial<RegistryCredentialInput>) =>
+    request<RegistryCredentialSummary>(`/api/registries/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteRegistry: (id: string) =>
+    request<{ ok: true }>(`/api/registries/${id}`, { method: "DELETE" }),
   authConfig: () => request<AuthConfig>("/api/auth-config"),
   startOidc: () => request<{ url: string; redirect?: boolean }>("/api/auth/sign-in/social", {
     method: "POST",
