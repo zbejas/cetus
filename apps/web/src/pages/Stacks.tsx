@@ -90,11 +90,13 @@ export function StacksPage() {
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
   const [hostFilter, setHostFilter] = useState(urlHostId);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkBusy, setBulkBusy] = useState<"start" | "stop" | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<"start" | "stop" | "delete" | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [moreStack, setMoreStack] = useState<StackSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<StackSummary | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [compose, setCompose] = useState(DEFAULT_COMPOSE);
@@ -102,6 +104,7 @@ export function StacksPage() {
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const all = useMemo(() => stacks.data ?? [], [stacks.data]);
+  const selectedStacks = useMemo(() => all.filter((stack) => selected.has(stack.id)), [all, selected]);
 
   const hosts = useMemo(() => {
     const map = new Map<string, { id: string; name: string }>();
@@ -300,6 +303,37 @@ export function StacksPage() {
       toast.error("Delete failed", error instanceof ApiError ? error.message : "Unknown error");
     } finally {
       setRowBusy((current) => (current === key ? null : current));
+    }
+  }
+
+  async function deleteSelected() {
+    if (!canDelete || bulkDeleteConfirm !== "delete") return;
+    const targets = all.filter((stack) => selected.has(stack.id));
+    if (targets.length === 0) return;
+    setBulkBusy("delete");
+    try {
+      const results = await Promise.allSettled(
+        targets.map((stack) => api.stackAction(stack.id, "delete", { confirmName: stack.name })),
+      );
+      const succeeded = results.filter((result) => result.status === "fulfilled").length;
+      const failed = results.length - succeeded;
+      if (failed === 0) {
+        toast.success("Delete queued", `${succeeded} of ${targets.length} stacks queued.`);
+      } else if (succeeded === 0) {
+        toast.error("Delete failed", "No stacks were queued for deletion.");
+      } else {
+        toast.push({
+          title: "Delete partially queued",
+          description: `${succeeded} of ${targets.length} stacks queued. ${failed} could not start.`,
+          tone: "info",
+        });
+      }
+      setBulkDeleteOpen(false);
+      setBulkDeleteConfirm("");
+      setSelected(new Set());
+      invalidateStacks();
+    } finally {
+      setBulkBusy(null);
     }
   }
 
@@ -632,6 +666,20 @@ export function StacksPage() {
                 >
                   <Square size={12} /> Stop selected
                 </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => {
+                    setBulkDeleteConfirm("");
+                    setBulkDeleteOpen(true);
+                  }}
+                  loading={bulkBusy === "delete"}
+                  disabled={bulkBusy !== null || !canDelete}
+                  aria-disabled={!canDelete}
+                  title={canDelete ? undefined : scopeReason("stacks:delete")}
+                >
+                  <Trash2 size={12} /> Delete selected
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} disabled={bulkBusy !== null}>
                   Clear
                 </Button>
@@ -923,6 +971,62 @@ export function StacksPage() {
             />
           </>
         ) : null}
+      </Dialog>
+
+      <Dialog
+        open={bulkDeleteOpen}
+        onClose={() => {
+          if (bulkBusy !== null) return;
+          setBulkDeleteOpen(false);
+          setBulkDeleteConfirm("");
+        }}
+        title={`Delete ${selectedStacks.length} selected stack${selectedStacks.length === 1 ? "" : "s"}`}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setBulkDeleteOpen(false);
+                setBulkDeleteConfirm("");
+              }}
+              disabled={bulkBusy !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => void deleteSelected()}
+              loading={bulkBusy === "delete"}
+              disabled={bulkDeleteConfirm !== "delete" || bulkBusy !== null || selectedStacks.length === 0}
+            >
+              <Trash2 size={14} /> Delete {selectedStacks.length}
+            </Button>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0, color: "var(--text-soft)" }}>
+          This runs <code className="mono">docker compose down</code> for each selected stack and moves its folder to trash on its host. Images and named volumes are not removed.
+        </p>
+        <div className="surface-soft" style={{ display: "grid", gap: 4, padding: "10px 12px", maxHeight: 180, overflow: "auto", fontSize: 12 }}>
+          {selectedStacks.slice(0, 20).map((stack) => (
+            <div key={stack.id} style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+              <span className="mono">{stack.name}</span>
+              <span className="muted">{stack.hostName}</span>
+            </div>
+          ))}
+          {selectedStacks.length > 20 ? (
+            <span className="muted">and {selectedStacks.length - 20} more</span>
+          ) : null}
+        </div>
+        <label className="label" htmlFor="bulk-delete-confirm" style={{ marginTop: 12 }}>
+          Type <span className="mono">delete</span> to confirm
+        </label>
+        <Input
+          id="bulk-delete-confirm"
+          value={bulkDeleteConfirm}
+          onChange={(event) => setBulkDeleteConfirm(event.target.value)}
+          autoComplete="off"
+        />
       </Dialog>
     </div>
   );
