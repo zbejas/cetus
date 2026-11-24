@@ -214,4 +214,22 @@ CREATE TABLE IF NOT EXISTS snapshot (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS snapshot_stack_idx ON snapshot(stack_id);
+CREATE TABLE IF NOT EXISTS update_queue (
+  id TEXT PRIMARY KEY NOT NULL,
+  stack_id TEXT NOT NULL REFERENCES stack(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL,
+  stack_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  position INTEGER NOT NULL DEFAULT 0,
+  trigger TEXT NOT NULL DEFAULT 'bulk',
+  config TEXT NOT NULL DEFAULT '{}',
+  actor_name TEXT NOT NULL,
+  operation_id TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS update_queue_status_idx ON update_queue(status, position);
+CREATE INDEX IF NOT EXISTS update_queue_stack_idx ON update_queue(stack_id);
 `;

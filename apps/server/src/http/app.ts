@@ -47,6 +47,15 @@ import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext, setAut
 import { manualAutoUpdateConfig, resolveAutoUpdate } from "../lib/autoUpdateConfig.ts";
 import { readGlobalAutoUpdate } from "../lib/globalAutoUpdate.ts";
 import { startAutoUpdateScheduler, startBackupScheduler, startRetentionScheduler, startUpdateCheckScheduler } from "../lib/scheduler.ts";
+import {
+  enqueueUpdateQueue,
+  getUpdateQueueEntry,
+  listUpdateQueue,
+  reorderUpdateQueue,
+  removeUpdateQueueEntry,
+  startNextQueuedUpdate,
+  startUpdateQueueScheduler,
+} from "../lib/updateQueue.ts";
 import { createBackup, deleteBackup, getBackup, listBackups, recoverInterruptedBackups, stageRestore } from "../lib/backups.ts";
 import { checkStackForUpdates, checkStacksForUpdates, clearUpdateCheck, listUpdateChecks, markAutoUpdateApplied, readUpdateCheck } from "../lib/updateCheckState.ts";
 import { getUserPalette, setUserPalette } from "../lib/preferences.ts";
@@ -734,7 +743,7 @@ const mcpTools = [
   },
   {
     name: "apply_all_updates",
-    description: "Start a health-gated update for every visible stack with an available image update. Requires mcp:write and updates:apply.",
+    description: "Queue a health-gated update for every visible stack with an available image update. The manager runs the queue one stack at a time. Requires mcp:write and updates:apply.",
     scope: "updates:apply",
     mode: "write",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -754,16 +763,31 @@ function mcpLimit(value: unknown, fallback: number) {
   return Math.max(1, Math.min(Math.floor(parsed), 200));
 }
 
+function filterUpdateQueueForActor(actor: Actor) {
+  const view = listUpdateQueue();
+  const allowed = (entry: (typeof view.active)[number]) =>
+    actorCanTarget(actor, { hostId: entry.hostId, stackId: entry.stackId }, keyRestrictions(actor));
+  return {
+    active: view.active.filter(allowed),
+    recent: view.recent.filter(allowed),
+    pausedUntil: view.pausedUntil,
+  };
+}
+
 async function applyVisibleUpdates(actor: Actor, request?: Request): Promise<BulkUpdateResult> {
   const stacks = filterStacksForActor(actor, await listStacks());
   const global = readGlobalAutoUpdate();
   const started: BulkUpdateResult["started"] = [];
+  const queued: BulkUpdateResult["queued"] = [];
   const skipped: BulkUpdateResult["skipped"] = [];
+  const pending: Array<{ stackId: string; config: ReturnType<typeof manualAutoUpdateConfig> }> = [];
+  const names = new Map<string, string>();
   const seen = new Set<string>();
 
   for (const stack of stacks) {
     if (!stack.updateAvailable || seen.has(stack.id)) continue;
     seen.add(stack.id);
+    names.set(stack.id, stack.displayName);
     const row = getStackRow(stack.id);
     if (!row) {
       skipped.push({ stackId: stack.id, stackName: stack.displayName, reason: "Stack is no longer indexed." });
@@ -781,43 +805,55 @@ async function applyVisibleUpdates(actor: Actor, request?: Request): Promise<Bul
       skipped.push({ stackId: stack.id, stackName: stack.displayName, reason: "Another operation is already running." });
       continue;
     }
-    try {
-      const config = manualAutoUpdateConfig(readMetadata(row), global);
-      const check = readUpdateCheck(row.id);
-      const selected = config.services?.length ? new Set(config.services) : null;
-      const excluded = new Set(config.excludeServices ?? []);
-      const actionable = check?.services.some((service) =>
-        service.updateAvailable
-        && (!selected || selected.has(service.service))
-        && !excluded.has(service.service),
-      ) ?? false;
-      if (!actionable) {
-        skipped.push({
-          stackId: stack.id,
-          stackName: stack.displayName,
-          reason: "Only excluded services have updates.",
-        });
-        continue;
-      }
-      const operation = startAutoUpdateOperation(row.id, actor, request, { config, trigger: "bulk" });
-      started.push({ stackId: row.id, stackName: stack.displayName, operationId: operation.id });
-    } catch (error) {
+    const config = manualAutoUpdateConfig(readMetadata(row), global);
+    const check = readUpdateCheck(row.id);
+    const selected = config.services?.length ? new Set(config.services) : null;
+    const excluded = new Set(config.excludeServices ?? []);
+    const actionable = check?.services.some((service) =>
+      service.updateAvailable
+      && (!selected || selected.has(service.service))
+      && !excluded.has(service.service),
+    ) ?? false;
+    if (!actionable) {
       skipped.push({
         stackId: stack.id,
         stackName: stack.displayName,
-        reason: error instanceof Error ? error.message : "Update could not start.",
+        reason: "Only excluded services have updates.",
       });
+      continue;
     }
+    pending.push({ stackId: row.id, config });
+  }
+
+  const enqueued = enqueueUpdateQueue({ stacks: pending, actorName: actor.name, trigger: "bulk" });
+  startNextQueuedUpdate();
+  for (const id of enqueued.ids) {
+    const entry = getUpdateQueueEntry(id);
+    if (!entry) continue;
+    if (entry.status === "running" && entry.operationId) {
+      started.push({ stackId: entry.stackId, stackName: entry.displayName, operationId: entry.operationId });
+    } else if (entry.status === "queued") {
+      queued.push({ stackId: entry.stackId, stackName: entry.displayName, queueId: entry.id });
+    } else if (entry.error) {
+      skipped.push({ stackId: entry.stackId, stackName: entry.displayName, reason: entry.error });
+    }
+  }
+  for (const stackId of enqueued.skipped) {
+    skipped.push({
+      stackId,
+      stackName: names.get(stackId) ?? stackId,
+      reason: "This stack is already in the update queue.",
+    });
   }
 
   recordAudit({
     actor,
     action: "updates.apply",
     resourceType: "instance",
-    metadata: { started: started.length, skipped: skipped.length },
+    metadata: { started: started.length, queued: queued.length, skipped: skipped.length },
     request,
   });
-  return { started, skipped };
+  return { started, queued, skipped };
 }
 
 async function executeMcpTool(actor: Actor, name: string, args: Record<string, any>) {
@@ -1574,6 +1610,7 @@ export async function createApp() {
     void reconcileSelfUpdates();
   }, 10_000);
   startAutoUpdateScheduler();
+  startUpdateQueueScheduler();
   startUpdateCheckScheduler();
   startBackupScheduler();
   startRetentionScheduler();
@@ -1982,6 +2019,39 @@ export async function createApp() {
     .post("/api/updates/apply", async ({ request }) => {
       const actor = await actorForScope(request, "updates:apply");
       return applyVisibleUpdates(actor, request);
+    })
+    .get("/api/update-queue", async ({ request }) => {
+      const actor = await actorForScope(request, "stacks:read");
+      return filterUpdateQueueForActor(actor);
+    })
+    .put("/api/update-queue/order", async ({ request, body }) => {
+      const actor = await actorForScope(request, "updates:apply");
+      const ids = Array.isArray((body as { ids?: unknown })?.ids)
+        ? ((body as { ids: unknown[] }).ids).map(String)
+        : [];
+      if (ids.length === 0) throw new ApiError(422, "queue_order_empty", "Provide the queued IDs in the new order.");
+      const view = filterUpdateQueueForActor(actor);
+      for (const entry of view.active) {
+        if (entry.status === "queued") assertTarget(actor, entry.hostId, entry.stackId);
+      }
+      try {
+        reorderUpdateQueue(ids);
+      } catch (error) {
+        throw new ApiError(409, "queue_order_invalid", error instanceof Error ? error.message : "The queue could not be reordered.");
+      }
+      return filterUpdateQueueForActor(actor);
+    })
+    .delete("/api/update-queue/:id", async ({ request, params }) => {
+      const actor = await actorForScope(request, "updates:apply");
+      const entry = getUpdateQueueEntry(params.id);
+      if (!entry) throw new ApiError(404, "queue_entry_not_found", "Update queue entry not found.");
+      assertTarget(actor, entry.hostId, entry.stackId);
+      try {
+        removeUpdateQueueEntry(params.id);
+      } catch (error) {
+        throw new ApiError(409, "queue_entry_running", error instanceof Error ? error.message : "The queue entry could not be removed.");
+      }
+      return { ok: true };
     })
     .post("/api/stacks/:id/auto-update/run", async ({ request, params }) => {
       const actor = await actorForScope(request, "stacks:deploy");

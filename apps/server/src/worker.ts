@@ -554,8 +554,8 @@ async function handleAutoUpdateCommand(message: any) {
     send({
       type: "operation.finished",
       operationId,
-      status: result.status === "success" ? "success" : "failed",
-      exitCode: result.status === "success" ? 0 : 1,
+      status: result.status === "success" || result.status === "skipped" ? "success" : "failed",
+      exitCode: result.status === "success" || result.status === "skipped" ? 0 : 1,
       deployed: result.status === "success",
       autoUpdateStatus: result.status,
       rateLimited: result.rateLimited === true,

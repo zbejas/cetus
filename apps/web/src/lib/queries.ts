@@ -12,6 +12,7 @@ export const queryKeys = {
   stack: (id: string) => ["stack", id] as const,
   operations: ["operations"] as const,
   operation: (id: string) => ["operation", id] as const,
+  updateQueue: ["update-queue"] as const,
   audit: (stackId?: string) => ["audit", stackId ?? "all"] as const,
   keys: ["keys"] as const,
   users: ["users"] as const,
@@ -344,6 +345,34 @@ export function useApplyAllUpdates() {
       client.invalidateQueries({ queryKey: queryKeys.dashboard });
       client.invalidateQueries({ queryKey: ["stacks"] });
       client.invalidateQueries({ queryKey: queryKeys.operations });
+      client.invalidateQueries({ queryKey: queryKeys.updateQueue });
+    },
+  });
+}
+
+export function useUpdateQueue() {
+  return useQuery({
+    queryKey: queryKeys.updateQueue,
+    queryFn: api.updateQueue,
+    refetchInterval: 4_000,
+  });
+}
+
+export function useReorderUpdateQueue() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.reorderUpdateQueue,
+    onSuccess: (view) => client.setQueryData(queryKeys.updateQueue, view),
+  });
+}
+
+export function useRemoveUpdateQueueEntry() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.removeUpdateQueueEntry,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: queryKeys.updateQueue });
+      client.invalidateQueries({ queryKey: queryKeys.dashboard });
     },
   });
 }

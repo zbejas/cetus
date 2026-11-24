@@ -22,6 +22,8 @@ Run one manager per SQLite database. The schedulers and worker registry are in-p
 | `apps/server/src/lib/operations.ts` | Operation lifecycle, compose actions, output capture, notification dispatch |
 | `apps/server/src/lib/selfContainer.ts` | Container identity lookup used by manager and worker self-update |
 | `apps/server/src/lib/selfUpdate.ts` | Detached self-update helper script, rollback tag, and helper launch |
+| `apps/server/src/lib/updateQueue.ts` | Persistent manual update queue and serial manager |
+| `apps/server/src/lib/operationEvents.ts` | Operation-finished events used to advance the update queue |
 | `apps/server/src/lib/registries.ts` | Per-host registry credentials and Docker config generation |
 | `apps/server/src/lib/remote.ts` | Worker registry, command correlation, remote logs, remote update checks |
 | `apps/server/src/lib/hosts.ts` | Local and remote host summaries, inventory merge |
@@ -155,6 +157,7 @@ Enrollment tokens expire after 15 minutes and are single use. Reconnects use the
 - The update-check sweep runs 15 seconds after boot and then every six hours. It skips stacks checked in the last hour and stacks currently updating.
 - The auto-update scheduler ticks every 15 seconds, resolves the fleet default from `settings.autoUpdate` against each stack's override, evaluates the cron expression in its configured timezone, and queues due stacks. At most `CETUS_AUTO_UPDATE_CONCURRENCY` operations run at once. Scheduled runs skip stacks with no pending digest update and pull only changed services.
 - A registry rate-limit failure pauses scheduled starts for `CETUS_PULL_RATE_LIMIT_BACKOFF_MINUTES` (default six hours).
+- Manual fleet updates use the persistent `update_queue` table. The manager starts one entry at a time by default, advances when the operation finishes, and keeps the queue across restarts.
 - Cetus worker stacks are hidden from fleet lists, update sweeps, and bulk updates, but the scheduler can send a detached `worker.self-update` when the worker supports it and its version is older than the manager.
 - Auto-updates run the health gate and roll back to the previous compose file and image ids on failure. See [Updates](updates.md).
 - The backup scheduler ticks every minute, runs a daily backup at `CETUS_BACKUP_CRON`, and prunes older archives to `CETUS_BACKUP_KEEP`. See [Backups](backups.md).

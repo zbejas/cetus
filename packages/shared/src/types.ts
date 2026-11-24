@@ -133,6 +133,7 @@ export interface UpdateCheckService {
   currentDigest: string | null;
   latestDigest: string | null;
   updateAvailable: boolean;
+  autoUpdateDisabled?: boolean;
   error?: string;
 }
 
@@ -275,7 +276,34 @@ export interface DashboardData {
 
 export interface BulkUpdateResult {
   started: { stackId: string; stackName: string; operationId: string }[];
+  queued: { stackId: string; stackName: string; queueId: string }[];
   skipped: { stackId: string; stackName: string; reason: string }[];
+}
+
+export type UpdateQueueStatus = "queued" | "running" | "success" | "failed" | "cancelled" | "skipped";
+
+export interface UpdateQueueEntry {
+  id: string;
+  stackId: string;
+  stackName: string;
+  displayName: string;
+  hostId: string;
+  hostName: string;
+  status: UpdateQueueStatus;
+  position: number;
+  trigger: "manual" | "bulk" | "queue" | "schedule";
+  operationId: string | null;
+  error: string | null;
+  actorName: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface UpdateQueueView {
+  active: UpdateQueueEntry[];
+  recent: UpdateQueueEntry[];
+  pausedUntil: string | null;
 }
 
 export interface RegistryCredentialHost {

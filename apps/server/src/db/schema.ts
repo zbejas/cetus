@@ -234,6 +234,26 @@ export const snapshot = sqliteTable("snapshot", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(now),
 }, (table) => [index("snapshot_stack_idx").on(table.stackId)]);
 
+export const updateQueue = sqliteTable("update_queue", {
+  id: text("id").primaryKey(),
+  stackId: text("stack_id").notNull().references(() => stack.id, { onDelete: "cascade" }),
+  hostId: text("host_id").notNull(),
+  stackName: text("stack_name").notNull(),
+  status: text("status").$type<"queued" | "running" | "success" | "failed" | "cancelled" | "skipped">().notNull().default("queued"),
+  position: integer("position").notNull().default(0),
+  trigger: text("trigger").$type<"manual" | "bulk" | "queue" | "schedule">().notNull().default("bulk"),
+  config: text("config").notNull().default("{}"),
+  actorName: text("actor_name").notNull(),
+  operationId: text("operation_id"),
+  error: text("error"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(now),
+  startedAt: integer("started_at", { mode: "timestamp" }),
+  finishedAt: integer("finished_at", { mode: "timestamp" }),
+}, (table) => [
+  index("update_queue_status_idx").on(table.status, table.position),
+  index("update_queue_stack_idx").on(table.stackId),
+]);
+
 export const schema = {
   user,
   session,
@@ -253,4 +273,5 @@ export const schema = {
   notificationDelivery,
   backup,
   snapshot,
+  updateQueue,
 };

@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -24,10 +24,12 @@ import { useApplyAllUpdates, useCheckAllUpdates, useDashboard, useMe, useScanSta
 import { can, scopeReason } from "../lib/api";
 import { scheduleLabel } from "../lib/autoUpdate";
 import { GlobalAutoUpdateDialog } from "../components/GlobalAutoUpdateDialog";
+import { FleetUpdateQueuePanel } from "../components/FleetUpdateQueuePanel";
 import { useToast } from "../components/Toast";
 import { StatusBadge, StatusDot } from "../components/Status";
 import { Badge, Button, EmptyState, IconButton, PageHeader, Skeleton } from "../components/ui";
 import { formatBytes, formatDate, formatPercent, relativeTime, titleCase } from "../lib/format";
+import { groupRepeatedActivity, ACTIVITY_GROUP_WINDOW_MS } from "../lib/activity";
 
 const NEW_STACK_FLAG = "cetus:new-stack";
 
@@ -211,13 +213,14 @@ export function DashboardPage() {
     try {
       const result = await applyAll.mutateAsync();
       await dashboard.refetch();
-      if (result.started.length > 0) {
-        toast.success(
-          `Updating ${result.started.length} stack${result.started.length === 1 ? "" : "s"}`,
-          result.skipped.length > 0
-            ? `${result.skipped.length} skipped. Progress is on each stack page.`
-            : "Progress is on each stack page.",
-        );
+      const total = result.started.length + result.queued.length;
+      if (total > 0) {
+        const detail = result.queued.length > 0
+          ? `${result.queued.length} waiting in the queue. Reorder from the update queue panel.`
+          : result.skipped.length > 0
+            ? `${result.skipped.length} skipped.`
+            : "Progress is on each stack page.";
+        toast.success(total === 1 ? "Update started" : `Queued ${total} updates`, detail);
       } else if (result.skipped.length > 0) {
         toast.push({
           title: "No updates started",
@@ -343,6 +346,7 @@ export function DashboardPage() {
             onUpdateAll={() => void updateAll()}
             onConfigureSchedule={() => setScheduleOpen(true)}
           />
+          <FleetUpdateQueuePanel />
           <QuickActionsPanel
             onNewStack={openNewStack}
             onScan={scanFolder}
@@ -634,6 +638,8 @@ function RecentStacksPanel({ stacks, onCreate, canWrite }: { stacks: StackSummar
 }
 
 function ActivityPanel({ activity }: { activity: AuditEntry[] }) {
+  const groups = useMemo(() => groupRepeatedActivity(activity), [activity]);
+  const windowMinutes = Math.round(ACTIVITY_GROUP_WINDOW_MS / 60_000);
   return (
     <section className="panel">
       <div className="panel-header">
@@ -645,7 +651,7 @@ function ActivityPanel({ activity }: { activity: AuditEntry[] }) {
           View all <ChevronRight size={12} />
         </Link>
       </div>
-      {activity.length === 0 ? (
+      {groups.length === 0 ? (
         <EmptyState
           icon={<ActivityIcon size={20} />}
           title="No activity yet"
@@ -654,25 +660,31 @@ function ActivityPanel({ activity }: { activity: AuditEntry[] }) {
       ) : (
         <div className="panel-body" style={{ paddingTop: 6, paddingBottom: 6 }}>
           <div className="timeline">
-            {activity.slice(0, 8).map((entry) => (
-              <div className="timeline-item" key={entry.id}>
-                <span className="timeline-dot" data-tone={activityTone(entry.action)} />
-                <div className="timeline-body" style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-                    <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {actionLabel(entry.action)}
-                    </strong>
-                    <span className="timeline-time" style={{ flex: "none" }} title={formatDate(entry.createdAt)}>
-                      {relativeTime(entry.createdAt)}
-                    </span>
-                  </div>
-                  <div className="timeline-time">
-                    {entry.actorName}
-                    {entry.resourceType ? ` · ${titleCase(entry.resourceType)}` : ""}
+            {groups.slice(0, 8).map((group) => {
+              const entry = group.entry;
+              return (
+                <div className="timeline-item" key={entry.id}>
+                  <span className="timeline-dot" data-tone={activityTone(entry.action)} />
+                  <div className="timeline-body" style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+                      <strong
+                        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        title={group.count > 1 ? `${group.count} matching events in ${windowMinutes} minutes` : undefined}
+                      >
+                        {actionLabel(entry.action)}{group.count > 1 ? ` ×${group.count}` : ""}
+                      </strong>
+                      <span className="timeline-time" style={{ flex: "none" }} title={formatDate(group.latestAt)}>
+                        {relativeTime(group.latestAt)}
+                      </span>
+                    </div>
+                    <div className="timeline-time">
+                      {entry.actorName}
+                      {entry.resourceType ? ` · ${titleCase(entry.resourceType)}` : ""}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -710,8 +722,8 @@ function UpdateQueuePanel({
       <div className="panel-header" style={{ flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <RefreshCw size={15} color="var(--accent)" />
-          <h3>Update queue</h3>
-          <Badge tone={updates.length > 0 ? "warn" : "default"}>{updates.length} queued</Badge>
+          <h3>Available updates</h3>
+          <Badge tone={updates.length > 0 ? "warn" : "default"}>{updates.length} available</Badge>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <Button
