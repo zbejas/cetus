@@ -14,6 +14,7 @@ import { isCetusWorkerStackName } from "./cetusWorker.ts";
 
 export { isCetusWorkerStackName } from "./cetusWorker.ts";
 import type {
+  DockerContainer,
   ServiceState,
   SnapshotInfo,
   StackDetail,
@@ -21,7 +22,7 @@ import type {
   StackStatus,
   StackSummary,
 } from "@shared/types.ts";
-import { composePs, getStats, parseLabels } from "./docker.ts";
+import { getStats, invalidateContainerCache, listContainers } from "./docker.ts";
 import { LOCAL_HOST_ID, ensureLocalHost, getHostRow, hostRowToSummary } from "./hosts.ts";
 import {
   getRemoteStack,
@@ -52,6 +53,7 @@ export function invalidateStackCache(id?: string) {
   } else {
     serviceCache.clear();
   }
+  invalidateContainerCache();
 }
 
 export function hashText(text: string) {
@@ -148,17 +150,20 @@ function publishedPorts(ps: Record<string, any> | undefined): ServiceState["port
 
   const raw = String(ps?.Ports ?? "");
   const result: ServiceState["ports"] = [];
+  const seen = new Set<string>();
   for (const token of raw.split(",")) {
     const trimmed = token.trim();
-    const match = trimmed.match(/(?:0\.0\.0\.0|\[::\]|127\.0\.0\.1)?:?(\d+)->(\d+)\/(tcp|udp)/);
-    if (match) {
-      result.push({
-        published: match[1],
-        target: match[2],
-        protocol: match[3],
-        url: `http://localhost:${match[1]}`,
-      });
-    }
+    const match = trimmed.match(/(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]|::)?:?(\d+)->(\d+)\/(tcp|udp)/);
+    if (!match) continue;
+    const key = `${match[1]}:${match[2]}/${match[3]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      published: match[1],
+      target: match[2],
+      protocol: match[3],
+      url: `http://localhost:${match[1]}`,
+    });
   }
   return result;
 }
@@ -176,13 +181,34 @@ export function computeStatus(services: ServiceState[]): StackStatus {
   return "unknown";
 }
 
-async function getServicesForStack(row: StackRow): Promise<ServiceState[]> {
+function healthFromStatus(status: string): ServiceState["health"] {
+  const lower = status.toLowerCase();
+  if (lower.includes("(unhealthy)")) return "unhealthy";
+  if (lower.includes("(healthy)")) return "healthy";
+  if (lower.includes("(health: starting)") || lower.includes("(starting)")) return "starting";
+  return "none";
+}
+
+function containerState(state: string): ServiceState["state"] {
+  const lower = state.toLowerCase();
+  return ["running", "exited", "created", "paused", "restarting", "dead"].includes(lower)
+    ? lower as ServiceState["state"]
+    : "unknown";
+}
+
+async function getServicesForStack(
+  row: StackRow,
+  containers?: DockerContainer[],
+  includeStats = false,
+): Promise<ServiceState[]> {
   const owner = getHostRow(row.hostId);
   if (owner?.kind === "worker") {
     return getRemoteStack(row.hostId, row.name)?.services ?? [];
   }
-  const cached = serviceCache.get(row.id);
-  if (cached && Date.now() - cached.at < SERVICE_TTL_MS) return cached.services;
+  if (!includeStats) {
+    const cached = serviceCache.get(row.id);
+    if (cached && Date.now() - cached.at < SERVICE_TTL_MS) return cached.services;
+  }
 
   const composePath = path.join(row.dir, row.composeFile);
   let compose: Record<string, any> = {};
@@ -193,42 +219,38 @@ async function getServicesForStack(row: StackRow): Promise<ServiceState[]> {
   }
 
   const definitions = (compose.services ?? {}) as Record<string, any>;
-  const psRows = await composePs(row.dir, row.projectName);
-  const psByService = new Map<string, Record<string, any>>();
-  for (const ps of psRows) {
-    const service = String(ps.Service ?? "");
-    if (service) psByService.set(service, ps);
+  const snapshot = containers ?? await listContainers();
+  const serviceContainers = new Map<string, DockerContainer>();
+  for (const container of snapshot) {
+    if (container.project !== row.projectName || !container.service) continue;
+    if (serviceContainers.has(container.service)) continue;
+    serviceContainers.set(container.service, container);
   }
 
-  const stats = await getStats();
+  const stats = includeStats ? await getStats() : new Map();
   const services: ServiceState[] = Object.entries(definitions).map(([name, definition]) => {
-    const ps = psByService.get(name);
-    const image = String(definition?.image ?? ps?.Image ?? "unknown");
-    const containerName = String(ps?.Names ?? ps?.Name ?? "");
+    const container = serviceContainers.get(name);
+    const image = String(definition?.image ?? container?.image ?? "unknown");
+    const containerName = container?.names ?? "";
     const stat = stats.get(containerName);
-    const healthRaw = String(ps?.Health ?? "").toLowerCase();
-    const health: ServiceState["health"] =
-      healthRaw === "healthy" || healthRaw === "unhealthy" || healthRaw === "starting"
-        ? healthRaw
-        : "none";
     return {
       name,
       image,
-      state: (String(ps?.State ?? "created").toLowerCase() as ServiceState["state"]) ?? "unknown",
-      health,
-      status: String(ps?.Status ?? (ps ? "" : "Not created")),
-      ports: publishedPorts(ps),
-      containerId: ps?.ID ? String(ps.ID) : null,
+      state: container ? containerState(container.state) : "created",
+      health: container ? healthFromStatus(container.status) : "none",
+      status: container ? container.status : "Not created",
+      ports: publishedPorts({ Ports: container?.ports ?? "" }),
+      containerId: container?.id || null,
       containerName: containerName || null,
       cpu: stat?.cpu ?? null,
       memoryUsed: stat?.memoryUsed ?? null,
       memoryLimit: stat?.memoryLimit ?? null,
-      uptime: ps?.RunningFor ? String(ps.RunningFor) : null,
+      uptime: container?.runningFor || null,
       oneShot: isOneShot(name, definition ?? {}),
     };
   });
 
-  serviceCache.set(row.id, { at: Date.now(), services });
+  if (!includeStats) serviceCache.set(row.id, { at: Date.now(), services });
   return services;
 }
 
@@ -265,11 +287,13 @@ export async function listStacks(hostId?: string): Promise<StackSummary[]> {
     .filter((row) => !isCetusWorkerStackName(row.name, row.projectName));
   const hosts = new Map(db.select().from(schema.host).all().map((row) => [row.id, row]));
   const checks = listUpdateChecks();
+  const hasLocalStacks = rows.some((row) => hosts.get(row.hostId)?.kind !== "worker");
+  const containers = hasLocalStacks ? await listContainers() : undefined;
 
   const summaries = await Promise.all(rows.map(async (row) => {
     const host = hosts.get(row.hostId);
     if (!host) return null;
-    const services = await getServicesForStack(row);
+    const services = await getServicesForStack(row, containers, false);
     const summary = buildStackSummary(row, host, services);
     summary.updateAvailable = checks.get(row.id)?.available ?? false;
     return summary;
@@ -340,7 +364,7 @@ export async function getStackDetail(id: string): Promise<StackDetail | null> {
     };
   }
 
-  const services = await getServicesForStack(row);
+  const services = await getServicesForStack(row, undefined, true);
   const metadata = readMetadata(row);
   const resolved = resolveAutoUpdate(metadata, globalAutoUpdate);
   const composePath = path.join(row.dir, row.composeFile);

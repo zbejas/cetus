@@ -25,6 +25,9 @@ export interface HostSummary {
   slug: string;
   kind: "local" | "worker";
   status: HostStatus;
+  cetusVersion: string | null;
+  workerUpdateAvailable: boolean;
+  workerUpdateSupported: boolean;
   dockerVersion: string | null;
   os: string | null;
   arch: string | null;

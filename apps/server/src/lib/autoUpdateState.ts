@@ -12,6 +12,8 @@ interface StoredRun {
   operationId: string | null;
 }
 
+const COOLDOWN_KEY = "autoupdate.cooldown";
+
 function readSetting(key: string) {
   return db.select().from(schema.setting).where(eq(schema.setting.key, key)).get()?.value ?? null;
 }
@@ -30,6 +32,20 @@ function lastKey(stackId: string) {
 
 function nextKey(stackId: string) {
   return `autoupdate.next:${stackId}`;
+}
+
+export function readAutoUpdateCooldown(): string | null {
+  const raw = readSetting(COOLDOWN_KEY);
+  if (!raw) return null;
+  const at = Date.parse(raw);
+  return Number.isFinite(at) && at > Date.now() ? new Date(at).toISOString() : null;
+}
+
+export function setAutoUpdateCooldown(minutes = 360) {
+  const capped = Math.max(5, Math.min(1440, Math.floor(minutes)));
+  const until = new Date(Date.now() + capped * 60_000).toISOString();
+  writeSetting(COOLDOWN_KEY, until);
+  return until;
 }
 
 export function readAutoUpdateState(stackId: string): AutoUpdateState {

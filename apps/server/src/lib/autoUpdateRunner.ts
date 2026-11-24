@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { composePs, docker } from "./docker.ts";
 import { loadComposeServices } from "./composeConfig.ts";
+import { isRateLimitError } from "./rateLimit.ts";
 
 export interface AutoUpdateRunConfig {
   services?: string[];
@@ -20,6 +21,7 @@ export interface AutoUpdateTarget {
 export interface AutoUpdateResult {
   status: "success" | "failed" | "rolled-back";
   message: string;
+  rateLimited?: boolean;
 }
 
 function isOneShot(name: string, service: Record<string, any>) {
@@ -89,7 +91,7 @@ export async function runAutoUpdate(
     emit(`[cetus] Could not record current images: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 
-  const run = async (args: string[], label: string) => {
+  const run = async (args: string[], label: string, capture?: (text: string) => void) => {
     emit(`[cetus] $ docker compose -p ${target.projectName} ${args.join(" ")}\n`);
     const proc = Bun.spawn(["docker", "compose", "-p", target.projectName, ...args], {
       cwd: target.dir,
@@ -103,7 +105,9 @@ export async function runAutoUpdate(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        emit(prefix + decoder.decode(value, { stream: true }));
+        const text = prefix + decoder.decode(value, { stream: true });
+        emit(text);
+        capture?.(text);
       }
     };
     await Promise.all([pump(proc.stdout), pump(proc.stderr, "[stderr] ")]);
@@ -112,9 +116,16 @@ export async function runAutoUpdate(
     return exitCode;
   };
 
-  const pullExit = await run(["pull", ...selected], "pull");
+  let pullOutput = "";
+  const pullExit = await run(["pull", ...selected], "pull", (text) => {
+    pullOutput = `${pullOutput}${text}`.slice(-40_000);
+  });
   if (pullExit !== 0) {
-    return { status: "failed", message: "Image pull failed. Nothing was recreated." };
+    return {
+      status: "failed",
+      message: "Image pull failed. Nothing was recreated.",
+      rateLimited: isRateLimitError(pullOutput),
+    };
   }
 
   const upExit = await run(["up", "-d", "--remove-orphans"], "up");

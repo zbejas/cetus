@@ -18,10 +18,22 @@ export default defineConfig({
     trace: "only-on-failure",
     screenshot: "only-on-failure",
   },
-  webServer: {
-    command: "CETUS_ADMIN_EMAIL=admin@cetus.local CETUS_ADMIN_PASSWORD=cetus-admin bun run dev:all",
-    port: 5173,
-    reuseExistingServer: true,
-    timeout: 90_000,
-  },
+  webServer: [
+    {
+      command: "bun run dev",
+      port: 3000,
+      reuseExistingServer: true,
+      timeout: 90_000,
+      env: {
+        CETUS_ADMIN_EMAIL: "admin@cetus.local",
+        CETUS_ADMIN_PASSWORD: "cetus-admin",
+      },
+    },
+    {
+      command: "bun run dev:web",
+      port: 5173,
+      reuseExistingServer: true,
+      timeout: 90_000,
+    },
+  ],
 });

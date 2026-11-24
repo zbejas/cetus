@@ -19,6 +19,30 @@ export const LOCAL_HOST_ID = "host-local";
 
 type HostRow = typeof schema.host.$inferSelect;
 
+function hostInfo(row: HostRow): Record<string, unknown> {
+  try {
+    return row.info ? JSON.parse(row.info) as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+export function workerSelfUpdateSupported(hostId: string) {
+  const row = getHostRow(hostId);
+  if (!row || row.kind !== "worker") return false;
+  return hostInfo(row).selfUpdateSupported === true;
+}
+
+export function compareVersions(left: string, right: string) {
+  const parts = (value: string) => value.replace(/^v/i, "").split(/[.+-]/).slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  const a = parts(left);
+  const b = parts(right);
+  for (let index = 0; index < 3; index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
+}
+
 export function hostRowToSummary(row: HostRow, counts?: {
   stacks?: number;
   running?: number;
@@ -29,12 +53,23 @@ export function hostRowToSummary(row: HostRow, counts?: {
   diskUsed?: number | null;
   diskTotal?: number | null;
 }): HostSummary {
+  const info = hostInfo(row);
+  const cetusVersion = row.kind === "local"
+    ? config.version
+    : typeof info.cetusVersion === "string" ? info.cetusVersion : null;
+  const workerUpdateSupported = row.kind === "worker" && info.selfUpdateSupported === true;
+  const workerUpdateAvailable = row.kind === "worker"
+    && Boolean(cetusVersion)
+    && compareVersions(cetusVersion!, config.version) < 0;
   return {
     id: row.id,
     name: row.name,
     slug: row.slug,
     kind: row.kind,
     status: row.status,
+    cetusVersion,
+    workerUpdateAvailable,
+    workerUpdateSupported,
     dockerVersion: row.dockerVersion,
     os: row.os,
     arch: row.arch,
@@ -82,7 +117,7 @@ export async function ensureLocalHost(): Promise<HostRow> {
     arch: info?.architecture ?? null,
     cpus: info?.cpus ?? null,
     memory: info?.memory ?? null,
-    info: info ? JSON.stringify(info) : null,
+    info: JSON.stringify({ ...(info ?? {}), cetusVersion: config.version, selfUpdateSupported: false }),
     lastSeenAt: now,
   };
 

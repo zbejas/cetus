@@ -130,7 +130,7 @@ export function GlobalAutoUpdateDialog({
           <label className="field">
             <span className="label">Cron</span>
             <Input className="mono" value={cron} onChange={(event) => setCron(event.target.value)} placeholder="0 4 * * *" />
-            {cronError ? <span className="help" style={{ color: "var(--danger)" }}>{cronError}</span> : <span className="help">Minute hour day month weekday. The timezone above is used.</span>}
+            {cronError ? <span className="help" style={{ color: "var(--danger)" }}>{cronError}</span> : <span className="help">Minute hour day month weekday. The timezone above is used. For example, 0 */6 * * * runs every six hours.</span>}
           </label>
         ) : null}
 
@@ -150,7 +150,7 @@ export function GlobalAutoUpdateDialog({
         </div>
 
         <div className="auto-update-hint">
-          <Clock3 size={12} /> Open a stack's auto-update dialog to add a custom schedule or exclude services such as gluetun.
+          <Clock3 size={12} /> Scheduled updates skip stacks whose digest check found no new image. Open a stack's auto-update dialog to add a custom schedule or exclude services such as gluetun.
         </div>
       </div>
     </Dialog>

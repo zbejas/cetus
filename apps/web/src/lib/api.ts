@@ -304,8 +304,10 @@ export const api = {
   stackLogs: (id: string, tail = 200) => request<string>(`/api/stacks/${id}/logs?tail=${tail}`),
   restoreSnapshot: (id: string, file: string) =>
     request<StackDetail>(`/api/stacks/${id}/snapshots/${encodeURIComponent(file)}/restore`, { method: "POST" }),
-  operations: () => request<Operation[]>("/api/operations"),
+  operations: () => request<Operation[]>("/api/operations?compact=1"),
   operation: (id: string) => request<Operation>(`/api/operations/${id}`),
+  updateWorker: (hostId: string) =>
+    request<Operation>(`/api/hosts/${hostId}/self-update`, { method: "POST" }),
   audit: (params: { limit?: number; stackId?: string } = {}) => {
     const query = new URLSearchParams();
     if (params.limit) query.set("limit", String(params.limit));

@@ -117,15 +117,17 @@ test("tails container logs and filters them", async ({ page }) => {
   await expect(page.locator(".log-match-count").first()).not.toHaveText("0");
 
   const pause = page.getByRole("button", { name: "Pause logs" }).first();
-  if (await pause.count() > 0) {
+  const logState = page.locator(".log-state").first();
+  if (await pause.count() > 0 && (await logState.getAttribute("data-status")) === "live") {
     await pause.click();
-    await expect(page.locator(".log-state").first()).toHaveText("PAUSED");
+    await expect(logState).toHaveText("PAUSED");
     await page.getByRole("button", { name: "Resume logs" }).first().click();
-    await expect(page.locator(".log-state").first()).toHaveText("LIVE");
+    await expect.poll(async () => logState.getAttribute("data-status")).toMatch(/^(live|ended)$/);
   }
 
-  if (await page.locator(".logs-source-row").count() >= 2) {
-    await page.locator(".logs-source-main").nth(1).click();
+  const unselected = page.locator('.logs-source-row[data-selected="false"]').first();
+  if (await unselected.count() > 0) {
+    await unselected.getByRole("button", { name: /new panel/i }).click();
     await expect(page.locator(".log-pane")).toHaveCount(2);
     await page.locator(".log-pane").first().getByRole("button", { name: /focus this pane/i }).click();
     await expect(page.locator(".log-pane")).toHaveCount(1);
@@ -280,6 +282,37 @@ test("stores a per-host registry credential without returning its secret", async
   expect(removed.status()).toBe(200);
   const remaining = await (await page.request.get("/api/registries")).json();
   expect(remaining.some((entry: { id: string }) => entry.id === credential.id)).toBe(false);
+});
+
+test("shows the worker Cetus version on the hosts page", async ({ page }) => {
+  await login(page);
+  const hosts = await (await page.request.get("/api/hosts")).json();
+  const worker = hosts.find((host: { kind: string }) => host.kind === "worker") as
+    | { cetusVersion: string | null; workerUpdateAvailable: boolean; workerUpdateSupported: boolean }
+    | undefined;
+  if (!worker) {
+    test.skip(true, "No worker host is connected.");
+    return;
+  }
+  expect("cetusVersion" in worker).toBe(true);
+  expect("workerUpdateAvailable" in worker).toBe(true);
+  expect("workerUpdateSupported" in worker).toBe(true);
+
+  await page.goto("/hosts");
+  await expect(page.getByText(/Cetus/).first()).toBeVisible();
+  if (!worker.cetusVersion) {
+    await expect(page.getByText("Manual update").first()).toBeVisible();
+  }
+});
+
+test("keeps operation lists compact and loads output on demand", async ({ page }) => {
+  await login(page);
+  const compact = await (await page.request.get("/api/operations?compact=1")).json();
+  for (const operation of compact) expect(operation.output).toBe("");
+  if (compact.length > 0) {
+    const full = await (await page.request.get(`/api/operations/${compact[0].id}`)).json();
+    expect(typeof full.output).toBe("string");
+  }
 });
 
 test("rejects an anonymous API request", async ({ page }) => {

@@ -22,7 +22,10 @@ export const session = sqliteTable("session", {
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
   userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
-}, (table) => [index("session_user_idx").on(table.userId)]);
+}, (table) => [
+  index("session_user_idx").on(table.userId),
+  index("session_expires_idx").on(table.expiresAt),
+]);
 
 export const account = sqliteTable("account", {
   id: text("id").primaryKey(),
@@ -47,7 +50,7 @@ export const verification = sqliteTable("verification", {
   expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(now),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(now),
-});
+}, (table) => [index("verification_identifier_idx").on(table.identifier)]);
 
 export const hostCredential = sqliteTable("host_credential", {
   hostId: text("host_id").primaryKey().references(() => host.id, { onDelete: "cascade" }),
@@ -91,6 +94,7 @@ export const stack = sqliteTable("stack", {
 }, (table) => [
   uniqueIndex("stack_host_name_idx").on(table.hostId, table.name),
   index("stack_host_idx").on(table.hostId),
+  index("stack_host_status_idx").on(table.hostId, table.status),
 ]);
 
 export const operation = sqliteTable("operation", {
@@ -107,7 +111,12 @@ export const operation = sqliteTable("operation", {
   exitCode: integer("exit_code"),
   startedAt: integer("started_at", { mode: "timestamp" }).notNull().$defaultFn(now),
   finishedAt: integer("finished_at", { mode: "timestamp" }),
-}, (table) => [index("operation_stack_idx").on(table.stackId)]);
+}, (table) => [
+  index("operation_stack_idx").on(table.stackId),
+  index("operation_stack_status_idx").on(table.stackId, table.status),
+  index("operation_status_idx").on(table.status),
+  index("operation_started_idx").on(table.startedAt),
+]);
 
 export const auditLog = sqliteTable("audit_log", {
   id: text("id").primaryKey(),
@@ -126,6 +135,7 @@ export const auditLog = sqliteTable("audit_log", {
 }, (table) => [
   index("audit_created_idx").on(table.createdAt),
   index("audit_stack_idx").on(table.stackId),
+  index("audit_stack_created_idx").on(table.stackId, table.createdAt),
 ]);
 
 export const apiKey = sqliteTable("api_key", {
@@ -185,7 +195,10 @@ export const notificationDelivery = sqliteTable("notification_delivery", {
   status: text("status").$type<"sent" | "failed">().notNull(),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(now),
-}, (table) => [index("notification_delivery_channel_idx").on(table.channelId)]);
+}, (table) => [
+  index("notification_delivery_channel_idx").on(table.channelId),
+  index("notification_delivery_created_idx").on(table.createdAt),
+]);
 
 export const invite = sqliteTable("invite", {
   id: text("id").primaryKey(),

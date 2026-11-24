@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gte, lt } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import type { UpdateCheckResult } from "@shared/types.ts";
@@ -22,13 +22,19 @@ export function readUpdateCheck(stackId: string): UpdateCheckResult | null {
   }
 }
 
+const UPDATE_CHECK_PREFIX = "updatecheck:";
+
 export function listUpdateChecks(): Map<string, UpdateCheckResult> {
   const map = new Map<string, UpdateCheckResult>();
-  const rows = db.select().from(schema.setting).all();
+  const rows = db.select().from(schema.setting)
+    .where(and(
+      gte(schema.setting.key, UPDATE_CHECK_PREFIX),
+      lt(schema.setting.key, `${UPDATE_CHECK_PREFIX};`),
+    ))
+    .all();
   for (const row of rows) {
-    if (!row.key.startsWith("updatecheck:")) continue;
     try {
-      map.set(row.key.slice("updatecheck:".length), JSON.parse(row.value) as UpdateCheckResult);
+      map.set(row.key.slice(UPDATE_CHECK_PREFIX.length), JSON.parse(row.value) as UpdateCheckResult);
     } catch {
       // Ignore a corrupt cached check; the next check replaces it.
     }
@@ -65,6 +71,24 @@ export function writeUpdateCheck(stackId: string, result: UpdateCheckResult) {
 
 export function clearUpdateCheck(stackId: string) {
   db.delete(schema.setting).where(eq(schema.setting.key, keyFor(stackId))).run();
+}
+
+export function pendingUpdateServices(
+  stackId: string,
+  config?: { services?: string[]; excludeServices?: string[] } | null,
+): string[] | null {
+  const check = readUpdateCheck(stackId);
+  if (!check) return null;
+  const selected = config?.services?.length ? new Set(config.services) : null;
+  const excluded = new Set(config?.excludeServices ?? []);
+  const names = new Set<string>();
+  for (const service of check.services) {
+    if (!service.updateAvailable || !service.latestDigest || service.error) continue;
+    if (selected && !selected.has(service.service)) continue;
+    if (excluded.has(service.service)) continue;
+    names.add(service.service);
+  }
+  return [...names];
 }
 
 export function markAutoUpdateApplied(stackId: string, services?: string[], excludeServices?: string[]) {

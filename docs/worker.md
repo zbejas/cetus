@@ -49,6 +49,20 @@ The manager stores only a hash of the enrollment token. The worker consumes the 
 
 3. The host appears in `/api/hosts` and in the unified stacks view. Remote stacks are indexed under the worker host.
 
+### Update a worker
+
+The worker reports its Cetus version in the host list. When the version is older than the manager and the worker supports self-update, the Hosts page and host detail page show an update button. The worker starts a detached helper, recreates its own container, and reports the result after reconnecting. Global auto-update applies to the hidden worker stack on the same schedule once the worker supports self-update.
+
+A worker running a build before the self-update protocol cannot update itself safely. Update it once from its stack directory:
+
+```bash
+cd /opt/stacks/cetus-worker
+docker compose pull
+docker compose up -d
+```
+
+After it reconnects on the new build, panel updates and the global schedule manage it.
+
 ## Protocol
 
 The socket carries JSON messages. Elysia parses JSON before the handler, so the handler accepts either a parsed object or a raw string or byte buffer.
@@ -83,6 +97,7 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 | Worker to manager | `stack.logs.end` | Stream finished |
 | Manager to worker | `snapshot.request` | Force a fresh snapshot |
 | Manager to worker | `registry.auth` | Docker `auths` object for the credentials that target this worker |
+| Manager to worker | `worker.self-update` | Operation ID, worker stack, Compose file, and config for a detached self-update |
 
 ## What works
 
@@ -99,7 +114,10 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - Remote stack delete. The worker runs `compose down`, snapshots the compose file, and moves the stack directory to `data/trash` on the worker. The manager removes the index row after the operation succeeds.
 - Managed container start, stop, restart, pause, unpause, and remove through `container.action` and `container.actioned`. The worker rejects standalone containers without a Compose project label.
 - Remote registry digest checks and scheduled auto-updates through `update-check` and `auto-update`.
-- Per-host registry credentials through `registry.auth`. The worker writes `<data>/docker/config.json` with mode `0600`, points `DOCKER_CONFIG` at that directory, and uses it for digest checks and image pulls. The manager sends the full replacement at enrollment and whenever a credential changes.
+- Per-host registry credentials through `registry.auth`. The worker writes `<data>/docker/config.json` with mode `0600`, merges a visible host `~/.docker/config.json` under the Cetus credentials, points `DOCKER_CONFIG` at that directory, and uses it for digest checks and image pulls. The manager sends the full Cetus replacement at enrollment and whenever a credential changes.
+- Cetus version reporting. The worker sends `cetusVersion` and `selfUpdateSupported` in its snapshot info, so the host page and dashboard can flag an out-of-date worker.
+- Safe worker self-update through `worker.self-update`. The worker identifies its own container, starts a detached helper with a rollback tag and health gate, and reports `operation.finished` after reconnecting.
+- Global auto-update includes the hidden `cetus-worker` stack when the worker supports self-update and its version is older than the manager.
 - Remote stacks appear in the dashboard, stacks table, host page, and MCP list tools, except the Cetus worker stack itself.
 
 ## What is not in this slice
@@ -119,7 +137,9 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - A stack whose name or Compose project is `cetus-worker` is hidden from fleet lists, registry sweeps, and bulk updates. Keep the `compose/worker.yaml` project name when changing the worker recipe.
 - The manager filters host and stack results for API keys with host or stack targets. Keep `keyRestrictions` and `filterHostsForActor` / `filterStacksForActor` in sync when adding routes.
 - The worker shares the Docker socket with its own Cetus container. Do not mount a remote Docker socket over a network.
-- The worker Docker config contains base64 registry credentials, not sealed values. Keep the worker data directory private and back it up as a secret.
+- A worker running Cetus before the self-update protocol reports no Cetus version and `worker.selfUpdateSupported: false`. Update it once manually with its Compose file. After it reconnects on the new build, the host page offers the update button and the global schedule can update it.
+- The worker self-update helper receives the worker's `CETUS_*` environment variables plus `DOCKER_CONFIG`. Keep required Compose interpolation values in the worker environment or its stack `.env` file.
+- The worker Docker config contains base64 registry credentials, not sealed values. It can also include a merged host Docker login. Keep the worker data directory private and back it up as a secret.
 - Registry auth travels over the worker WebSocket. Use `wss://` outside local development; the manager sends credentials only after the worker authenticates with its secret.
 
 ## Related docs
