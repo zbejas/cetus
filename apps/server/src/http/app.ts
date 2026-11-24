@@ -95,10 +95,15 @@ import {
   getRemoteHost,
   getRemoteInventory,
   endRemoteLogStream,
+  endRemoteStackLogStream,
   failRemoteLogStream,
   failRemoteLogStreamsForHost,
+  failRemoteStackLogStream,
   pushRemoteLogChunk,
+  pushRemoteStackLogChunk,
   registerRemoteLogStream,
+  registerRemoteStackLogStream,
+  removeRemoteStackLogStream,
   requestWorkerContainerAction,
   resolveComposeWrite,
   resolveContainerAction,
@@ -1357,6 +1362,21 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
     return;
   }
 
+  if (message.type === "stack.logs.chunk") {
+    pushRemoteStackLogChunk(String(message.requestId), String(message.text ?? ""));
+    return;
+  }
+
+  if (message.type === "stack.logs.end") {
+    endRemoteStackLogStream(String(message.requestId));
+    return;
+  }
+
+  if (message.type === "stack.logs.error") {
+    failRemoteStackLogStream(String(message.requestId), String(message.error ?? "Stack log stream failed."));
+    return;
+  }
+
   if (message.type === "metadata.written") {
     resolveMetadataWrite(String(message.requestId), message.error ? String(message.error) : null);
     return;
@@ -2028,14 +2048,59 @@ export async function createApp() {
       const timestamps = query.timestamps === "1" || query.timestamps === "true";
       const owner = getHostRow(row.hostId);
       if (owner?.kind === "worker") {
-        try {
-          const text = await requestWorkerLogs(row.hostId, row.name, tail, row.projectName, timestamps);
-          return new Response(text, {
-            headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-cache" },
-          });
-        } catch (error) {
-          throw new ApiError(503, "worker_logs_unavailable", error instanceof Error ? error.message : "Worker did not return logs.");
-        }
+        const requestId = crypto.randomUUID();
+        const encoder = new TextEncoder();
+        let atLineBoundary = true;
+        let stopHeartbeat: (() => void) | null = null;
+        const stop = () => {
+          stopHeartbeat?.();
+          stopHeartbeat = null;
+        };
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            stopHeartbeat = keepLogStreamAlive(
+              (chunk) => controller.enqueue(chunk),
+              encoder,
+              () => atLineBoundary,
+            );
+            registerRemoteStackLogStream(requestId, {
+              hostId: row.hostId,
+              push: (text) => {
+                atLineBoundary = text.endsWith("\n");
+                controller.enqueue(encoder.encode(text));
+              },
+              close: () => {
+                stop();
+                try { controller.close(); } catch { /* stream closed */ }
+              },
+              fail: (message) => {
+                stop();
+                try { controller.error(new Error(message)); } catch { /* stream closed */ }
+              },
+            });
+            const sent = sendToWorker(row.hostId, {
+              type: "stack.logs.start",
+              requestId,
+              stackName: row.name,
+              projectName: row.projectName,
+              tail,
+              timestamps,
+            });
+            if (!sent) failRemoteStackLogStream(requestId, "Worker is not connected.");
+          },
+          cancel() {
+            stop();
+            sendToWorker(row.hostId, { type: "stack.logs.stop", requestId });
+            removeRemoteStackLogStream(requestId);
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "cache-control": "no-cache, no-transform",
+            "x-accel-buffering": "no",
+          },
+        });
       }
       const proc = Bun.spawn(["docker", "compose", "-p", row.projectName, "logs", "-f", "--tail", String(tail), "--no-color", ...(timestamps ? ["--timestamps"] : [])], {
         cwd: row.dir,

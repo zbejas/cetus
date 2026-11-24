@@ -74,9 +74,14 @@ export interface RemoteLogStream {
 }
 
 const remoteLogStreams = new Map<string, RemoteLogStream>();
+const remoteStackLogStreams = new Map<string, RemoteLogStream>();
 
 export function registerRemoteLogStream(requestId: string, stream: RemoteLogStream) {
   remoteLogStreams.set(requestId, stream);
+}
+
+export function registerRemoteStackLogStream(requestId: string, stream: RemoteLogStream) {
+  remoteStackLogStreams.set(requestId, stream);
 }
 
 export function removeRemoteLogStream(requestId: string) {
@@ -107,6 +112,33 @@ export function failRemoteLogStreamsForHost(hostId: string, message: string) {
     remoteLogStreams.delete(requestId);
     stream.fail(message);
   }
+  for (const [requestId, stream] of remoteStackLogStreams) {
+    if (stream.hostId !== hostId) continue;
+    remoteStackLogStreams.delete(requestId);
+    stream.fail(message);
+  }
+}
+
+export function removeRemoteStackLogStream(requestId: string) {
+  remoteStackLogStreams.delete(requestId);
+}
+
+export function pushRemoteStackLogChunk(requestId: string, text: string) {
+  remoteStackLogStreams.get(requestId)?.push(text);
+}
+
+export function endRemoteStackLogStream(requestId: string) {
+  const stream = remoteStackLogStreams.get(requestId);
+  if (!stream) return;
+  remoteStackLogStreams.delete(requestId);
+  stream.close();
+}
+
+export function failRemoteStackLogStream(requestId: string, message: string) {
+  const stream = remoteStackLogStreams.get(requestId);
+  if (!stream) return;
+  remoteStackLogStreams.delete(requestId);
+  stream.fail(message);
 }
 
 export function addPendingWorker(id: string, ws: any) {

@@ -539,6 +539,39 @@ function stopLogStream(requestId: string) {
   try { proc.kill(); } catch { /* already gone */ }
 }
 
+function startLogStream(requestId: string, proc: ReturnType<typeof Bun.spawn>, kind: "container" | "stack") {
+  logStreams.set(requestId, proc);
+
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.length) {
+        send({ type: `${kind}.logs.chunk`, requestId, text: decoder.decode(value, { stream: true }) });
+      }
+    }
+  };
+
+  Promise.all([
+    pump(proc.stdout as ReadableStream<Uint8Array>),
+    pump(proc.stderr as ReadableStream<Uint8Array>),
+  ])
+    .then(() => {
+      logStreams.delete(requestId);
+      send({ type: `${kind}.logs.end`, requestId });
+    })
+    .catch((error) => {
+      logStreams.delete(requestId);
+      send({
+        type: `${kind}.logs.error`,
+        requestId,
+        error: error instanceof Error ? error.message : `${kind === "stack" ? "Stack" : "Container"} log stream failed`,
+      });
+    });
+}
+
 function handleContainerLogStart(message: any) {
   const requestId = String(message.requestId);
   if (!requestId || logStreams.has(requestId)) return;
@@ -553,33 +586,37 @@ function handleContainerLogStart(message: any) {
     stdout: "pipe",
     stderr: "pipe",
   });
-  logStreams.set(requestId, proc);
+  startLogStream(requestId, proc, "container");
+}
 
-  const pump = async (stream: ReadableStream<Uint8Array>) => {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value?.length) {
-        send({ type: "container.logs.chunk", requestId, text: decoder.decode(value, { stream: true }) });
-      }
-    }
-  };
-
-  Promise.all([pump(proc.stdout), pump(proc.stderr)])
-    .then(() => {
-      logStreams.delete(requestId);
-      send({ type: "container.logs.end", requestId });
-    })
-    .catch((error) => {
-      logStreams.delete(requestId);
-      send({
-        type: "container.logs.error",
-        requestId,
-        error: error instanceof Error ? error.message : "Container log stream failed",
-      });
-    });
+function handleStackLogStart(message: any) {
+  const requestId = String(message.requestId);
+  if (!requestId || logStreams.has(requestId)) return;
+  const stackName = String(message.stackName ?? "");
+  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(stackName)) {
+    send({ type: "stack.logs.error", requestId, error: "Stack name is not valid." });
+    return;
+  }
+  const projectName = String(message.projectName ?? stackName);
+  const tail = String(Math.max(0, Math.min(Number(message.tail ?? 500), 5_000)));
+  const timestampArgs = message.timestamps === false ? [] : ["--timestamps"];
+  const proc = Bun.spawn([
+    "docker",
+    "compose",
+    "-p",
+    projectName,
+    "logs",
+    "-f",
+    "--tail",
+    tail,
+    "--no-color",
+    ...timestampArgs,
+  ], {
+    cwd: path.join(stacksDir, stackName),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  startLogStream(requestId, proc, "stack");
 }
 
 function stopAllLogStreams() {
@@ -655,6 +692,14 @@ function connect() {
       return;
     }
     if (message.type === "container.logs.stop") {
+      stopLogStream(String(message.requestId));
+      return;
+    }
+    if (message.type === "stack.logs.start") {
+      handleStackLogStart(message);
+      return;
+    }
+    if (message.type === "stack.logs.stop") {
       stopLogStream(String(message.requestId));
       return;
     }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   Activity as ActivityIcon,
@@ -62,8 +62,14 @@ export function ActivityPage() {
   const [range, setRange] = useState<RangeFilter>("all");
   const [selectedOperationId, setSelectedOperationId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const operationOutputRef = useRef<HTMLPreElement | null>(null);
+  const operationOutputPinned = useRef(true);
 
   const operationQuery = useOperation(selectedOperationId);
+
+  useEffect(() => {
+    operationOutputPinned.current = true;
+  }, [selectedOperationId]);
 
   const operationActorTypes = useMemo(() => {
     const map = new Map<string, string>();
@@ -128,6 +134,14 @@ export function ActivityPage() {
   const selectedOperation = operationQuery.data
     ?? operationsQuery.data?.find((operation) => operation.id === selectedOperationId)
     ?? null;
+
+  useEffect(() => {
+    const node = operationOutputRef.current;
+    if (!node) return;
+    if (selectedOperation?.status === "running" || operationOutputPinned.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [selectedOperation?.output, selectedOperation?.status]);
 
   function clearFilters() {
     setSearch("");
@@ -611,7 +625,15 @@ export function ActivityPage() {
                 </Button>
               </div>
             </div>
-            <pre className="log-view" style={{ minHeight: 200, maxHeight: 420 }}>
+            <pre
+              ref={operationOutputRef}
+              className="log-view"
+              style={{ minHeight: 200, maxHeight: 420 }}
+              onScroll={(event) => {
+                const node = event.currentTarget;
+                operationOutputPinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24;
+              }}
+            >
               {selectedOperation.output || "No output captured for this operation."}
             </pre>
           </>
