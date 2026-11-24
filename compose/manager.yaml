@@ -1,0 +1,24 @@
+services:
+  cetus:
+    image: ghcr.io/zbejas/cetus:latest
+    # build:
+    #   context: ..
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+      - /opt/stacks:/opt/stacks
+    environment:
+      CETUS_MODE: manager
+      CETUS_PORT: "3000"
+      # First-boot admin seed. Uncomment and change before exposing the instance.
+      # CETUS_ADMIN_EMAIL: admin@example.com
+      # CETUS_ADMIN_PASSWORD: change-this-password
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 20s
+      timeout: 4s
+      retries: 3

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Cetus">
+  <title>Cetus</title>
+  <defs>
+    <linearGradient id="cetus-tile" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7dd3fc"/>
+      <stop offset="0.55" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#075985"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#cetus-tile)"/>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15.25" fill="none" stroke="#e0f2fe" stroke-opacity="0.3" stroke-width="1.5"/>
+  <path d="M47 16L24 13L15 32L24 51L47 48" fill="none" stroke="#04121a" stroke-width="4.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="47" cy="16" r="5" fill="#04121a"/>
+  <circle cx="24" cy="13" r="3.8" fill="#04121a"/>
+  <circle cx="15" cy="32" r="5" fill="#04121a"/>
+  <circle cx="24" cy="51" r="3.8" fill="#04121a"/>
+  <circle cx="47" cy="48" r="5" fill="#04121a"/>
+</svg>

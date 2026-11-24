@@ -1,0 +1,102 @@
+name: Build and publish container image
+
+on:
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      version:
+        description: Version to publish, without the v prefix
+        required: true
+        type: string
+      latest:
+        description: Move the latest tag for a stable release
+        required: false
+        type: boolean
+        default: false
+      ref:
+        description: Git ref or SHA to build; defaults to the caller SHA
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build and push GHCR image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Resolve image version
+        id: release
+        env:
+          CALL_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          FORCE_LATEST: ${{ inputs.latest }}
+        run: |
+          tag="${CALL_VERSION:-$RELEASE_TAG}"
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::Expected a semver version, got '$version'"
+            exit 1
+          fi
+          core="${version%%-*}"
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          {
+            echo "version=$version"
+            echo "major=${core%%.*}"
+            echo "major_minor=${core%.*}"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          if [ -n "$CALL_VERSION" ] && [ "$FORCE_LATEST" = "true" ] && [ "$prerelease" = "false" ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=${{ steps.release.outputs.major_minor }},enable=${{ steps.release.outputs.prerelease == 'false' }}
+            type=raw,value=${{ steps.release.outputs.major }},enable=${{ steps.release.outputs.prerelease == 'false' && steps.release.outputs.major != '0' }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.latest == 'true' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

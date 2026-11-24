@@ -1,0 +1,510 @@
+import fs from "node:fs";
+import path from "node:path";
+import YAML from "yaml";
+import type { HostInventory, HostSummary, ServiceState, StackMetadata, StackStatus } from "@shared/types.ts";
+import {
+  composePs,
+  docker,
+  getDiskUsage,
+  getDockerInfo,
+  getStats,
+  getSystemDf,
+  listContainers,
+  listImages,
+  listNetworks,
+  listVolumes,
+} from "./lib/docker.ts";
+import { runAutoUpdate } from "./lib/autoUpdateRunner.ts";
+import { checkComposeUpdates } from "./lib/updateCheck.ts";
+
+const managerUrl = process.env.CETUS_MANAGER_URL ?? "ws://127.0.0.1:3000/api/ws/worker";
+const enrollToken = process.env.CETUS_ENROLL_TOKEN;
+const workerName = process.env.CETUS_WORKER_NAME ?? `worker-${crypto.randomUUID().slice(0, 6)}`;
+const stacksDir = path.resolve(process.env.CETUS_WORKER_STACKS_DIR ?? "/opt/stacks");
+const dataDir = path.resolve(process.env.CETUS_WORKER_DATA_DIR ?? "./data-worker");
+const credentialFile = path.join(dataDir, "worker.json");
+const composeNames = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+
+fs.mkdirSync(stacksDir, { recursive: true });
+fs.mkdirSync(dataDir, { recursive: true });
+
+interface StoredCredential {
+  hostId: string;
+  secret: string;
+}
+
+function readCredential(): StoredCredential | null {
+  try {
+    return JSON.parse(fs.readFileSync(credentialFile, "utf8")) as StoredCredential;
+  } catch {
+    return null;
+  }
+}
+
+function saveCredential(credential: StoredCredential) {
+  fs.writeFileSync(credentialFile, JSON.stringify(credential, null, 2), { mode: 0o600 });
+}
+
+function findCompose(dir: string) {
+  for (const name of composeNames) {
+    if (fs.existsSync(path.join(dir, name))) return name;
+  }
+  return null;
+}
+
+function oneShot(name: string, service: Record<string, any>) {
+  return service?.["x-cetus-one-shot"] === true || (name.startsWith("init") && service?.restart === "no");
+}
+
+function computeStatus(services: ServiceState[]): StackStatus {
+  if (services.length === 0) return "created";
+  const expected = services.filter((service) => !service.oneShot);
+  const relevant = expected.length > 0 ? expected : services;
+  const running = relevant.filter((service) => service.state === "running" || service.state === "restarting").length;
+  const unhealthy = relevant.some((service) => (service.state === "running" || service.state === "restarting") && service.health === "unhealthy");
+  if (running === relevant.length) return unhealthy ? "partial" : "running";
+  if (running > 0) return "partial";
+  if (relevant.every((service) => service.state === "exited" || service.state === "dead")) return "stopped";
+  return "created";
+}
+
+function portsFromPs(ps: Record<string, any> | undefined): ServiceState["ports"] {
+  const publishers = ps?.Publishers;
+  if (!Array.isArray(publishers)) return [];
+  const seen = new Set<string>();
+  return publishers
+    .filter((publisher: any) => Number(publisher.PublishedPort) > 0)
+    .filter((publisher: any) => {
+      const key = `${publisher.PublishedPort}:${publisher.TargetPort}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((publisher: any) => ({
+      published: String(publisher.PublishedPort),
+      target: String(publisher.TargetPort),
+      protocol: publisher.Protocol ?? "tcp",
+      url: `http://localhost:${publisher.PublishedPort}`,
+    }));
+}
+
+async function scanStacks() {
+  const stacks = [];
+  for (const entry of fs.readdirSync(stacksDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const dir = path.join(stacksDir, entry.name);
+    const composeFile = findCompose(dir);
+    if (!composeFile) continue;
+    const compose = fs.readFileSync(path.join(dir, composeFile), "utf8");
+    let parsed: any = {};
+    try { parsed = YAML.parse(compose) ?? {}; } catch { parsed = {}; }
+    const metadata: StackMetadata = fs.existsSync(path.join(dir, "cetus.json"))
+      ? JSON.parse(fs.readFileSync(path.join(dir, "cetus.json"), "utf8"))
+      : {};
+    const projectName = metadata.projectName ?? entry.name;
+    const psRows = await composePs(dir, projectName);
+    const byService = new Map<string, Record<string, any>>();
+    for (const ps of psRows) byService.set(String(ps.Service ?? ""), ps);
+    const stats = await getStats();
+    const services: ServiceState[] = Object.entries(parsed.services ?? {}).map(([name, definition]: [string, any]) => {
+      const ps = byService.get(name);
+      const containerName = String(ps?.Names ?? "");
+      const stat = stats.get(containerName);
+      const health = String(ps?.Health ?? "").toLowerCase();
+      return {
+        name,
+        image: String(definition?.image ?? ps?.Image ?? "unknown"),
+        state: (String(ps?.State ?? "created").toLowerCase() as ServiceState["state"]) ?? "unknown",
+        health: health === "healthy" || health === "unhealthy" || health === "starting" ? health : "none",
+        status: String(ps?.Status ?? "Not created"),
+        ports: portsFromPs(ps),
+        containerId: ps?.ID ? String(ps.ID) : null,
+        containerName: containerName || null,
+        cpu: stat?.cpu ?? null,
+        memoryUsed: stat?.memoryUsed ?? null,
+        memoryLimit: stat?.memoryLimit ?? null,
+        uptime: ps?.RunningFor ? String(ps.RunningFor) : null,
+        oneShot: oneShot(name, definition ?? {}),
+      };
+    });
+    stacks.push({
+      name: entry.name,
+      dir,
+      composeFile,
+      projectName,
+      status: computeStatus(services),
+      displayName: metadata.displayName,
+      description: metadata.description,
+      tags: metadata.tags,
+      metadata,
+      compose,
+      env: fs.existsSync(path.join(dir, ".env")) ? fs.readFileSync(path.join(dir, ".env"), "utf8") : "",
+      services,
+      profiles: [...new Set(Object.values(parsed.services ?? {}).flatMap((service: any) => service?.profiles ?? []).map(String))],
+    });
+  }
+  return stacks;
+}
+
+async function buildInventory(stacks: Awaited<ReturnType<typeof scanStacks>>): Promise<HostInventory> {
+  const [info, containers, images, volumes, networks, df, disk, stats] = await Promise.all([
+    getDockerInfo(),
+    listContainers(),
+    listImages(),
+    listVolumes(),
+    listNetworks(),
+    getSystemDf(),
+    getDiskUsage(),
+    getStats(),
+  ]);
+  let cpu = 0;
+  let memoryUsed = 0;
+  for (const sample of stats.values()) {
+    cpu += sample.cpu;
+    memoryUsed += sample.memoryUsed;
+  }
+  const host: HostSummary = {
+    id: "worker",
+    name: workerName,
+    slug: workerName,
+    kind: "worker",
+    status: "online",
+    dockerVersion: info?.serverVersion ?? null,
+    os: info?.os ?? null,
+    arch: info?.architecture ?? null,
+    cpus: info?.cpus ?? null,
+    memory: info?.memory ?? null,
+    lastSeenAt: new Date().toISOString(),
+    stackCount: stacks.length,
+    runningStacks: stacks.filter((stack) => stack.status === "running").length,
+    containerCount: containers.length,
+    imageCount: images.length,
+    cpuUsage: info?.cpus ? Math.min(100, cpu / info.cpus) : null,
+    memoryUsed,
+    diskUsed: disk?.used ?? null,
+    diskTotal: disk?.total ?? null,
+  };
+  return { host, info, containers, images, volumes, networks, df, disk };
+}
+
+let socket: WebSocket | null = null;
+let enrolled = false;
+let hostId: string | null = null;
+let secret: string | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function send(payload: Record<string, unknown>) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+}
+
+async function sendSnapshot() {
+  if (!enrolled) return;
+  try {
+    const info = await getDockerInfo();
+    const stacks = await scanStacks();
+    const inventory = await buildInventory(stacks);
+    send({
+      type: "snapshot",
+      name: workerName,
+      info: {
+        dockerVersion: info?.serverVersion ?? null,
+        os: info?.os ?? null,
+        arch: info?.architecture ?? null,
+        cpus: info?.cpus ?? null,
+        memory: info?.memory ?? null,
+      },
+      stacks,
+      inventory,
+    });
+  } catch (error) {
+    console.error("[cetus-worker] snapshot failed", error);
+  }
+}
+
+async function runCompose(projectName: string, stackName: string, operationId: string, args: string[]) {
+  const dir = path.join(stacksDir, stackName);
+  const proc = Bun.spawn(["docker", "compose", "-p", projectName, ...args], {
+    cwd: dir,
+    env: process.env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const pump = async (stream: ReadableStream<Uint8Array>, prefix = "") => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      send({ type: "operation.output", operationId, text: prefix + decoder.decode(value, { stream: true }) });
+    }
+  };
+  await Promise.all([pump(proc.stdout), pump(proc.stderr, "[stderr] ")]);
+  return proc.exited;
+}
+
+async function handleCommand(message: any) {
+  const operationId = String(message.operationId);
+  const stackName = String(message.stackName);
+  const projectName = String(message.projectName ?? message.stackName);
+  const appendLog = (text: string) => send({ type: "operation.output", operationId, text });
+  try {
+    appendLog(`[cetus] $ docker compose -p ${projectName} ${message.args.join(" ")}\n`);
+    let exitCode = await runCompose(projectName, stackName, operationId, (message.args ?? []).map(String));
+    if (exitCode === 0 && Array.isArray(message.argsAfter) && message.argsAfter.length > 0) {
+      appendLog(`[cetus] $ docker compose -p ${projectName} ${message.argsAfter.join(" ")}\n`);
+      exitCode = await runCompose(projectName, stackName, operationId, message.argsAfter.map(String));
+    }
+    send({
+      type: "operation.finished",
+      operationId,
+      status: exitCode === 0 ? "success" : "failed",
+      exitCode,
+      deployed: message.action === "deploy" || message.action === "update" || message.action === "start",
+    });
+    await sendSnapshot();
+  } catch (error) {
+    appendLog(`[cetus] ${error instanceof Error ? error.message : String(error)}\n`);
+    send({ type: "operation.finished", operationId, status: "failed", exitCode: 1 });
+  }
+}
+
+function handleMetadataWrite(message: any) {
+  const requestId = String(message.requestId);
+  try {
+    const dir = path.join(stacksDir, String(message.stackName));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "cetus.json"), `${JSON.stringify(message.metadata ?? {}, null, 2)}\n`);
+    send({ type: "metadata.written", requestId });
+    void sendSnapshot();
+  } catch (error) {
+    send({
+      type: "metadata.written",
+      requestId,
+      error: error instanceof Error ? error.message : "Metadata write failed",
+    });
+  }
+}
+
+async function handleUpdateCheck(message: any) {
+  const requestId = String(message.requestId);
+  try {
+    const results = [];
+    for (const entry of message.stacks ?? []) {
+      const name = String(entry.name);
+      const result = await checkComposeUpdates({
+        dir: path.join(stacksDir, name),
+        projectName: String(entry.projectName ?? name),
+        composeFile: String(entry.composeFile ?? "compose.yaml"),
+      });
+      results.push({ stackName: name, result });
+    }
+    send({ type: "update-check.result", requestId, results });
+  } catch (error) {
+    send({
+      type: "update-check.result",
+      requestId,
+      error: error instanceof Error ? error.message : "Update check failed.",
+    });
+  }
+}
+
+async function handleAutoUpdateCommand(message: any) {
+  const operationId = String(message.operationId);
+  const stackName = String(message.stackName);
+  const projectName = String(message.projectName ?? stackName);
+  const dir = path.join(stacksDir, stackName);
+  try {
+    const result = await runAutoUpdate(
+      {
+        dir,
+        projectName,
+        composeFile: String(message.composeFile ?? "compose.yaml"),
+      },
+      message.config ?? {},
+      (text) => send({ type: "operation.output", operationId, text }),
+    );
+    send({
+      type: "operation.finished",
+      operationId,
+      status: result.status === "success" ? "success" : "failed",
+      exitCode: result.status === "success" ? 0 : 1,
+      deployed: result.status === "success",
+      autoUpdateStatus: result.status,
+    });
+    await sendSnapshot();
+  } catch (error) {
+    send({ type: "operation.output", operationId, text: `[cetus] ${error instanceof Error ? error.message : String(error)}\n` });
+    send({ type: "operation.finished", operationId, status: "failed", exitCode: 1, autoUpdateStatus: "failed" });
+  }
+}
+
+async function handleLogsRequest(message: any) {
+  try {
+    const tail = String(message.tail ?? 200);
+    const timestampArgs = message.timestamps ? ["--timestamps"] : [];
+    if (message.containerId) {
+      const result = await docker(["logs", "--tail", tail, ...timestampArgs, String(message.containerId)], { timeoutMs: 15_000 });
+      send({ type: "logs.response", requestId: message.requestId, text: `${result.stdout}${result.stderr}` });
+      return;
+    }
+    const dir = path.join(stacksDir, String(message.stackName));
+    const result = await docker(["compose", "-p", String(message.projectName ?? message.stackName), "logs", "--no-color", "--tail", tail, ...timestampArgs], {
+      cwd: dir,
+      timeoutMs: 15_000,
+    });
+    send({ type: "logs.response", requestId: message.requestId, text: `${result.stdout}${result.stderr}` });
+  } catch (error) {
+    send({ type: "logs.response", requestId: message.requestId, error: error instanceof Error ? error.message : "Log request failed" });
+  }
+}
+
+const logStreams = new Map<string, ReturnType<typeof Bun.spawn>>();
+
+function stopLogStream(requestId: string) {
+  const proc = logStreams.get(requestId);
+  if (!proc) return;
+  logStreams.delete(requestId);
+  try { proc.kill(); } catch { /* already gone */ }
+}
+
+function handleContainerLogStart(message: any) {
+  const requestId = String(message.requestId);
+  if (!requestId || logStreams.has(requestId)) return;
+  const containerId = String(message.containerId ?? "");
+  if (!containerId) {
+    send({ type: "container.logs.end", requestId });
+    return;
+  }
+  const tail = String(Math.max(0, Math.min(Number(message.tail ?? 500), 5_000)));
+  const timestampArgs = message.timestamps === false ? [] : ["--timestamps"];
+  const proc = Bun.spawn(["docker", "logs", "-f", "--tail", tail, ...timestampArgs, containerId], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  logStreams.set(requestId, proc);
+
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.length) {
+        send({ type: "container.logs.chunk", requestId, text: decoder.decode(value, { stream: true }) });
+      }
+    }
+  };
+
+  Promise.all([pump(proc.stdout), pump(proc.stderr)])
+    .then(() => {
+      logStreams.delete(requestId);
+      send({ type: "container.logs.end", requestId });
+    })
+    .catch((error) => {
+      logStreams.delete(requestId);
+      send({
+        type: "container.logs.error",
+        requestId,
+        error: error instanceof Error ? error.message : "Container log stream failed",
+      });
+    });
+}
+
+function stopAllLogStreams() {
+  for (const requestId of [...logStreams.keys()]) stopLogStream(requestId);
+}
+
+function connect() {
+  const stored = readCredential();
+  if (stored) {
+    hostId = stored.hostId;
+    secret = stored.secret;
+  }
+
+  const ws = new WebSocket(managerUrl);
+  socket = ws;
+
+  ws.addEventListener("open", () => {
+    console.log(`[cetus-worker] connected to ${managerUrl}`);
+    send({
+      type: "hello",
+      token: hostId && secret ? undefined : enrollToken,
+      hostId,
+      secret,
+      name: workerName,
+      info: {},
+    });
+  });
+
+  ws.addEventListener("message", (event) => {
+    let message: any;
+    try { message = JSON.parse(String(event.data)); } catch { return; }
+    if (message.type === "enrolled") {
+      enrolled = true;
+      hostId = message.hostId;
+      if (message.secret) {
+        secret = message.secret;
+        saveCredential({ hostId: message.hostId, secret: message.secret });
+      }
+      console.log(`[cetus-worker] enrolled as ${message.hostId}`);
+      void sendSnapshot();
+      return;
+    }
+    if (message.type === "command") {
+      void handleCommand(message);
+      return;
+    }
+    if (message.type === "auto-update") {
+      void handleAutoUpdateCommand(message);
+      return;
+    }
+    if (message.type === "metadata.write") {
+      handleMetadataWrite(message);
+      return;
+    }
+    if (message.type === "update-check") {
+      void handleUpdateCheck(message);
+      return;
+    }
+    if (message.type === "logs.request") {
+      void handleLogsRequest(message);
+      return;
+    }
+    if (message.type === "container.logs.start") {
+      handleContainerLogStart(message);
+      return;
+    }
+    if (message.type === "container.logs.stop") {
+      stopLogStream(String(message.requestId));
+      return;
+    }
+    if (message.type === "snapshot.request") {
+      void sendSnapshot();
+      return;
+    }
+    if (message.type === "error") {
+      console.error("[cetus-worker] manager error:", message.message);
+    }
+  });
+
+  ws.addEventListener("close", () => {
+    enrolled = false;
+    stopAllLogStreams();
+    console.log("[cetus-worker] disconnected; reconnecting in 5s");
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 5_000);
+  });
+
+  ws.addEventListener("error", (error) => {
+    console.error("[cetus-worker] socket error", error);
+  });
+}
+
+setInterval(() => {
+  if (enrolled) {
+    send({ type: "heartbeat" });
+    void sendSnapshot();
+  }
+}, 15_000);
+
+connect();

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Cetus - Compose without the ceremony">
+  <title>Cetus - Compose without the ceremony</title>
+  <defs>
+    <linearGradient id="banner-bg" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0b1a24"/>
+      <stop offset="1" stop-color="#070b0f"/>
+    </linearGradient>
+    <radialGradient id="banner-glow" cx="0.18" cy="0.12" r="0.9">
+      <stop stop-color="#0e3b57" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#0e3b57" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="banner-halo">
+      <stop stop-color="#38bdf8" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="banner-tile" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7dd3fc"/>
+      <stop offset="0.55" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#075985"/>
+    </linearGradient>
+    <pattern id="banner-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1d3a4a" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="300" rx="20" fill="url(#banner-bg)"/>
+  <rect width="1200" height="300" rx="20" fill="url(#banner-grid)" opacity="0.16"/>
+  <rect width="1200" height="300" rx="20" fill="url(#banner-glow)"/>
+  <circle cx="144" cy="150" r="88" fill="url(#banner-halo)"/>
+  <circle cx="1080" cy="150" r="118" fill="none" stroke="#1d3a4a" stroke-opacity="0.55"/>
+
+  <g stroke="#38bdf8" stroke-opacity="0.22" stroke-width="1.2" fill="#7dd3fc" fill-opacity="0.55">
+    <path d="M1010 76L1088 108L1044 168L1136 196L1102 248" fill="none"/>
+    <path d="M1010 76L952 148L1044 168" fill="none"/>
+    <path d="M952 148L1006 230L1102 248" fill="none"/>
+    <circle cx="1010" cy="76" r="3"/>
+    <circle cx="1088" cy="108" r="2.4"/>
+    <circle cx="1044" cy="168" r="3.4"/>
+    <circle cx="1136" cy="196" r="2.4"/>
+    <circle cx="1102" cy="248" r="2.8"/>
+    <circle cx="952" cy="148" r="2.6"/>
+    <circle cx="1006" cy="230" r="2.2"/>
+  </g>
+
+  <g transform="translate(96 102) scale(1.5)">
+    <rect width="64" height="64" rx="16" fill="url(#banner-tile)"/>
+    <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15.25" fill="none" stroke="#e0f2fe" stroke-opacity="0.3" stroke-width="1.5"/>
+    <path d="M47 16L24 13L15 32L24 51L47 48" fill="none" stroke="#04121a" stroke-width="4.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="47" cy="16" r="5" fill="#04121a"/>
+    <circle cx="24" cy="13" r="3.8" fill="#04121a"/>
+    <circle cx="15" cy="32" r="5" fill="#04121a"/>
+    <circle cx="24" cy="51" r="3.8" fill="#04121a"/>
+    <circle cx="47" cy="48" r="5" fill="#04121a"/>
+  </g>
+
+  <text x="230" y="162" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="-2.4" fill="#e8eef4">Cetus</text>
+  <text x="234" y="205" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="26" font-weight="500" fill="#9fc7e8">Compose without the ceremony.</text>
+  <text x="234" y="242" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="3.2" fill="#6f9ab8">SELF-HOSTED | FILE-FIRST | DOCKER COMPOSE</text>
+
+  <rect x="0.75" y="0.75" width="1198.5" height="298.5" rx="19.25" fill="none" stroke="#1d3a4a" stroke-width="1.5"/>
+</svg>
