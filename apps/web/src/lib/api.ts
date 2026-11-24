@@ -5,6 +5,7 @@ import type {
   AutoUpdateConfig,
   BackupSummary,
   BulkUpdateResult,
+  UpdateQueueView,
   DashboardData,
   FleetUpdateCheckSummary,
   HostInventory,
@@ -290,6 +291,11 @@ export const api = {
     request<FleetUpdateCheckSummary>("/api/updates/check", { method: "POST", body: JSON.stringify({}) }),
   applyAllUpdates: () =>
     request<BulkUpdateResult>("/api/updates/apply", { method: "POST", body: JSON.stringify({}) }),
+  updateQueue: () => request<UpdateQueueView>("/api/update-queue"),
+  reorderUpdateQueue: (ids: string[]) =>
+    request<UpdateQueueView>("/api/update-queue/order", { method: "PUT", body: JSON.stringify({ ids }) }),
+  removeUpdateQueueEntry: (id: string) =>
+    request<{ ok: boolean }>(`/api/update-queue/${encodeURIComponent(id)}`, { method: "DELETE" }),
   validateStack: (id: string, compose: string) =>
     request<{ ok: boolean; errors: string[] }>(`/api/stacks/${id}/validate`, { method: "POST", body: JSON.stringify({ compose }) }),
   stackAction: (id: string, action: string, body: { profiles?: string[]; confirmName?: string } = {}) =>

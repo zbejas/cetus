@@ -29,6 +29,7 @@ import { markAutoUpdateApplied } from "./updateCheckState.ts";
 import { notifyEvent } from "./notifications.ts";
 import { getSelfInfo, isSelfUpdateTarget } from "./selfInfo.ts";
 import { refreshManagerRegistryConfig } from "./registries.ts";
+import { emitOperationFinished } from "./operationEvents.ts";
 import {
   buildSelfUpdateScript,
   removeSelfUpdateTag,
@@ -165,6 +166,7 @@ export function finishOperation(id: string, status: "success" | "failed" | "canc
   const timer = flushTimers.get(id);
   if (timer) clearTimeout(timer);
   flushTimers.delete(id);
+  emitOperationFinished(id, status);
 }
 
 export async function refreshStackAfterOperation(stackId: string, deployed: boolean) {
@@ -186,7 +188,7 @@ function startSelfUpdateOperation(
   stackRow: NonNullable<ReturnType<typeof getStackRow>>,
   actor: Actor,
   request?: Request,
-  options: { trigger?: "schedule" | "manual" | "bulk"; config?: AutoUpdateConfig; trackAutoUpdate?: boolean } = {},
+  options: { trigger?: "schedule" | "manual" | "bulk" | "queue"; config?: AutoUpdateConfig; trackAutoUpdate?: boolean } = {},
 ): Operation {
   const self = getSelfInfo();
   if (!self) throw new Error("Cetus could not identify its own container for a self-update.");
@@ -290,7 +292,7 @@ export function startWorkerSelfUpdateOperation(
   stackRow: NonNullable<ReturnType<typeof getStackRow>>,
   actor: Actor,
   request?: Request,
-  options: { trigger?: "schedule" | "manual" | "bulk"; config?: AutoUpdateConfig; trackAutoUpdate?: boolean } = {},
+  options: { trigger?: "schedule" | "manual" | "bulk" | "queue"; config?: AutoUpdateConfig; trackAutoUpdate?: boolean } = {},
 ): Operation {
   const owner = getHostRow(stackRow.hostId);
   if (owner?.kind !== "worker") throw new Error("The worker stack does not belong to a worker host.");
@@ -580,7 +582,7 @@ export const AUTO_UPDATE_ACTOR: Actor = {
 
 export interface AutoUpdateRunOptions {
   config?: AutoUpdateConfig;
-  trigger?: "schedule" | "manual" | "bulk";
+  trigger?: "schedule" | "manual" | "bulk" | "queue";
 }
 
 export function startAutoUpdateOperation(
@@ -595,6 +597,7 @@ export function startAutoUpdateOperation(
   const global = readGlobalAutoUpdate();
   const resolved = options.config ?? resolveAutoUpdate(metadata, global).config;
   const config = resolved ?? manualAutoUpdateConfig(metadata, global);
+  const respectUpdateLabels = options.trigger === "schedule";
   if (isSelfUpdateTarget(stackRow)) {
     return startSelfUpdateOperation(stackRow, actor, request, {
       trigger: options.trigger ?? "manual",
@@ -648,7 +651,7 @@ export function startAutoUpdateOperation(
       stackName: stackRow.name,
       projectName: stackRow.projectName,
       composeFile: stackRow.composeFile,
-      config,
+      config: { ...config, respectUpdateLabels },
     });
     if (!sent) {
       appendOutput(operation.id, "[cetus] Worker is not connected.\n");
@@ -675,6 +678,7 @@ export function startAutoUpdateOperation(
           healthCheck: config.healthCheck,
           rollback: config.rollback,
           healthGraceSeconds: config.healthGraceSeconds,
+          respectUpdateLabels,
         },
         (chunk) => appendOutput(operation.id, chunk),
       );
@@ -684,7 +688,11 @@ export function startAutoUpdateOperation(
           `\n[cetus] Registry pull limit reached. Scheduled updates pause for ${pullRateLimitBackoffMinutes()} minutes.\n`,
         );
       }
-      finishOperation(operation.id, result.status === "success" ? "success" : "failed", result.status === "success" ? 0 : 1);
+      finishOperation(
+        operation.id,
+        result.status === "success" || result.status === "skipped" ? "success" : "failed",
+        result.status === "success" || result.status === "skipped" ? 0 : 1,
+      );
       if (result.rateLimited) {
         setAutoUpdateCooldown(pullRateLimitBackoffMinutes());
         recordAutoUpdateRun(stackRow.id, "rate-limited", operation.id);

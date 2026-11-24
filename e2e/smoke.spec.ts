@@ -315,6 +315,15 @@ test("keeps operation lists compact and loads output on demand", async ({ page }
   }
 });
 
+test("exposes the update queue and rejects an empty order", async ({ page }) => {
+  await login(page);
+  const view = await (await page.request.get("/api/update-queue")).json();
+  expect(Array.isArray(view.active)).toBe(true);
+  expect(Array.isArray(view.recent)).toBe(true);
+  const empty = await page.request.put("/api/update-queue/order", { data: { ids: [] } });
+  expect(empty.status()).toBe(422);
+});
+
 test("rejects an anonymous API request", async ({ page }) => {
   const response = await page.request.get("/api/stacks");
   expect(response.status()).toBe(401);

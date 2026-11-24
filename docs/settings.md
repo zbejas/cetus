@@ -25,6 +25,7 @@ These are the only values that must be set outside the database:
 | `CETUS_BACKUP_KEEP` | `11` | Complete backups to retain |
 | `CETUS_UPDATE_CHECK_ENABLED` | `true` | Set `false` to disable registry update sweeps |
 | `CETUS_AUTO_UPDATE_CONCURRENCY` | `2` | Maximum auto-update operations running at once, clamped to 1-8 |
+| `CETUS_UPDATE_QUEUE_CONCURRENCY` | `1` | Maximum manual update queue entries running at once, clamped to 1-8 |
 | `CETUS_PULL_RATE_LIMIT_BACKOFF_MINUTES` | `360` | Pause scheduled auto-updates after a registry pull rate limit, clamped to 5-1440 |
 | `CETUS_AUDIT_RETENTION_DAYS` | `90` | Audit rows older than this are pruned daily |
 | `CETUS_NOTIFICATION_RETENTION_DAYS` | `30` | Notification delivery rows older than this are pruned daily |

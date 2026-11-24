@@ -3,6 +3,7 @@ import path from "node:path";
 import { composePs, docker } from "./docker.ts";
 import { loadComposeServices } from "./composeConfig.ts";
 import { isRateLimitError } from "./rateLimit.ts";
+import { autoUpdateDisabledByLabel } from "./updateLabels.ts";
 
 export interface AutoUpdateRunConfig {
   services?: string[];
@@ -10,6 +11,7 @@ export interface AutoUpdateRunConfig {
   healthCheck?: boolean;
   rollback?: boolean;
   healthGraceSeconds?: number;
+  respectUpdateLabels?: boolean;
 }
 
 export interface AutoUpdateTarget {
@@ -19,9 +21,48 @@ export interface AutoUpdateTarget {
 }
 
 export interface AutoUpdateResult {
-  status: "success" | "failed" | "rolled-back";
+  status: "success" | "failed" | "rolled-back" | "skipped";
   message: string;
   rateLimited?: boolean;
+}
+
+export function dependentServices(services: Record<string, any>, selected: string[]) {
+  const updated = new Set(selected);
+  const dependents = new Set<string>();
+  for (const [name, definition] of Object.entries(services)) {
+    if (!definition || updated.has(name)) continue;
+    const dependsOn = definition.depends_on;
+    const deps = Array.isArray(dependsOn)
+      ? dependsOn.map(String)
+      : dependsOn && typeof dependsOn === "object"
+        ? Object.keys(dependsOn)
+        : [];
+    if (deps.some((dep) => updated.has(dep))) {
+      dependents.add(name);
+      continue;
+    }
+    const serviceRefs = ["network_mode", "ipc", "pid"]
+      .map((field) => String(definition[field] ?? "").trim())
+      .map((value) => value.match(/^service:(.+)$/)?.[1] ?? "")
+      .filter(Boolean);
+    if (serviceRefs.some((ref) => updated.has(ref))) {
+      dependents.add(name);
+      continue;
+    }
+    const volumesFrom = Array.isArray(definition.volumes_from)
+      ? definition.volumes_from.map(String)
+      : typeof definition.volumes_from === "string" ? [definition.volumes_from] : [];
+    if (volumesFrom.some((ref: string) => {
+      if (ref.startsWith("container:")) return false;
+      return updated.has(ref.split(":")[0]);
+    })) {
+      dependents.add(name);
+      continue;
+    }
+    const links = Array.isArray(definition.links) ? definition.links.map(String) : [];
+    if (links.some((ref: string) => updated.has(ref.split(":")[0]))) dependents.add(name);
+  }
+  return [...dependents];
 }
 
 function isOneShot(name: string, service: Record<string, any>) {
@@ -61,20 +102,31 @@ export async function runAutoUpdate(
   snapshotCompose(target, previousCompose);
   const services = await loadComposeServices(target.dir, target.projectName, target.composeFile);
   const excluded = new Set(config.excludeServices ?? []);
+  const labelSkipped = new Set(
+    Object.keys(services).filter((name) => config.respectUpdateLabels === true && autoUpdateDisabledByLabel(services[name])),
+  );
+  for (const name of labelSkipped) {
+    emit(`[cetus] Skipping ${name}: updates are disabled by label.\n`);
+  }
   const selected = (config.services?.length
     ? config.services.filter((name) => services[name])
     : Object.keys(services)
-  ).filter((name) => !services[name]?.build && !excluded.has(name));
+  ).filter((name) => !services[name]?.build && !excluded.has(name) && !labelSkipped.has(name));
   if (!selected.length) {
+    if (config.respectUpdateLabels && labelSkipped.size > 0) {
+      emit("[cetus] Every selected service disables updates by label. Nothing was pulled.\n");
+      return { status: "skipped", message: "Updates are disabled by label for every selected service." };
+    }
     emit("[cetus] No pullable services selected for auto-update. Locally built images need an external build step.\n");
     return { status: "failed", message: "No pullable services selected." };
   }
 
   const previousImages = new Map<string, { imageRef: string; imageId: string }>();
+  let psRows: Record<string, any>[] = [];
   try {
-    const rows = await composePs(target.dir, target.projectName);
+    psRows = await composePs(target.dir, target.projectName);
     for (const serviceName of selected) {
-      const row = rows.find((entry) => entry.Service === serviceName);
+      const row = psRows.find((entry) => entry.Service === serviceName);
       const imageRef = row?.Image
         ? String(row.Image)
         : services[serviceName]?.image
@@ -89,6 +141,13 @@ export async function runAutoUpdate(
     }
   } catch (error) {
     emit(`[cetus] Could not record current images: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+
+  const runningServices = new Set(psRows.map((row) => String(row.Service ?? "")).filter(Boolean));
+  const dependents = dependentServices(services, selected).filter((name) => runningServices.has(name));
+  const forceWholeStack = dependents.length > 0;
+  if (forceWholeStack) {
+    emit(`[cetus] ${selected.join(", ")} has dependants (${dependents.join(", ")}). Recreating the whole stack so they reconnect.\n`);
   }
 
   const run = async (args: string[], label: string, capture?: (text: string) => void) => {
@@ -128,7 +187,10 @@ export async function runAutoUpdate(
     };
   }
 
-  const upExit = await run(["up", "-d", "--remove-orphans"], "up");
+  const upArgs = forceWholeStack
+    ? ["up", "-d", "--remove-orphans", "--force-recreate"]
+    : ["up", "-d", "--remove-orphans"];
+  const upExit = await run(upArgs, "up");
   if (upExit !== 0) {
     if (config.rollback === false) return { status: "failed", message: "Compose up failed." };
     return rollback(target, previousCompose, previousImages, selected, emit);
@@ -138,7 +200,10 @@ export async function runAutoUpdate(
     return { status: "success", message: "Images updated and containers recreated." };
   }
 
-  const healthy = await waitForHealth(target, services, selected, config, emit);
+  const healthTargets = forceWholeStack
+    ? Object.keys(services).filter((name) => runningServices.has(name))
+    : selected;
+  const healthy = await waitForHealth(target, services, healthTargets, config, emit);
   if (healthy) {
     return { status: "success", message: "Images updated and health checks passed." };
   }

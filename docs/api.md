@@ -63,7 +63,7 @@ An MCP key needs `mcp:read` or `mcp:write` plus the resource scope for each tool
 | `stack_exec` | `mcp:write`, `containers:exec` | Non-interactive command in a local service container |
 | `container_action` | `mcp:write`, `containers:write` | Start, stop, restart, pause, unpause, or remove a managed Compose container |
 | `apply_update` | `mcp:write`, `updates:apply` | Health-gated auto-update for one stack |
-| `apply_all_updates` | `mcp:write`, `updates:apply` | Update every visible stack with an available image update |
+| `apply_all_updates` | `mcp:write`, `updates:apply` | Queue every visible stack with an available image update |
 
 MCP and REST mutations write an audit entry with the actor, target, action, and a short command or argument summary. Local and worker stacks support compose, env, and metadata edits, delete to trash, lifecycle actions, and managed container actions. Remote stack exec, remote snapshot restore, and remote interactive terminals are not implemented; the API returns `501` and the UI disables those controls. Standalone containers without a Compose project are read-only.
 

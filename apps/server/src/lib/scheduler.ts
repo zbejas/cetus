@@ -19,6 +19,7 @@ import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
 import { checkStacksForUpdates, pendingUpdateServices, readUpdateCheck } from "./updateCheckState.ts";
 import { createBackup, listBackups } from "./backups.ts";
 import { refreshManagerRegistryConfig } from "./registries.ts";
+import { pruneUpdateQueue } from "./updateQueue.ts";
 import { config } from "../config.ts";
 
 let started = false;
@@ -72,7 +73,7 @@ function queueDueAutoUpdates(now: Date) {
 
     let nextConfig = autoConfig;
     if (!workerStack && config.updateCheckEnabled) {
-      const pending = pendingUpdateServices(row.id, autoConfig);
+      const pending = pendingUpdateServices(row.id, autoConfig, { respectLabels: true });
       if (pending && pending.length === 0) {
         recordAutoUpdateRun(row.id, "skipped", null);
         refreshAutoUpdateNext(row.id, autoConfig);
@@ -216,6 +217,7 @@ function pruneExpiredRecords() {
   db.delete(schema.notificationDelivery)
     .where(lt(schema.notificationDelivery.createdAt, deliveryCutoff))
     .run();
+  pruneUpdateQueue();
   runDatabaseMaintenance();
 }
 

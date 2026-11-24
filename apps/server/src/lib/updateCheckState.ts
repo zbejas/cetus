@@ -76,6 +76,7 @@ export function clearUpdateCheck(stackId: string) {
 export function pendingUpdateServices(
   stackId: string,
   config?: { services?: string[]; excludeServices?: string[] } | null,
+  options?: { respectLabels?: boolean },
 ): string[] | null {
   const check = readUpdateCheck(stackId);
   if (!check) return null;
@@ -84,6 +85,7 @@ export function pendingUpdateServices(
   const names = new Set<string>();
   for (const service of check.services) {
     if (!service.updateAvailable || !service.latestDigest || service.error) continue;
+    if (options?.respectLabels && service.autoUpdateDisabled) continue;
     if (selected && !selected.has(service.service)) continue;
     if (excluded.has(service.service)) continue;
     names.add(service.service);

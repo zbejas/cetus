@@ -2,7 +2,7 @@
 
 ## Overview
 
-Cetus owns the update loop for every stack. A registry digest sweep compares each running image with its remote manifest, and a schedule pulls new tags, recreates services, waits for a health gate, and rolls back when the new containers do not stay healthy. One global schedule can cover the fleet, and each stack can override it or exclude individual services. No Watchtower container is installed or required.
+Cetus owns the update loop for every stack. A registry digest sweep compares each running image with its remote manifest, and a schedule pulls new tags, recreates services, waits for a health gate, and rolls back when the new containers do not stay healthy. One global schedule can cover the fleet, and each stack can override it or exclude individual services. Manual fleet updates go through a persistent manager queue so stacks update one at a time instead of pulling in a burst. No Watchtower container is installed or required.
 
 ## Key files
 
@@ -20,6 +20,8 @@ Cetus owns the update loop for every stack. A registry digest sweep compares eac
 | `apps/server/src/lib/autoUpdateRunner.ts` | Pull, `compose up`, health gate, compose and image rollback |
 | `apps/server/src/lib/autoUpdateState.ts` | Next-run and last-run rows in `setting` |
 | `apps/server/src/lib/scheduler.ts` | 15-second cron tick, six-hour registry sweep, concurrency queue |
+| `apps/server/src/lib/updateQueue.ts` | Persistent manual update queue, ordering, start, finish, and pruning |
+| `apps/server/src/lib/operationEvents.ts` | Operation-finished events used to advance the update queue |
 | `apps/server/src/lib/operations.ts` | Operation creation, worker dispatch, snapshots, applied-update handling |
 | `apps/server/src/lib/cron.ts` | Five-field cron parser, timezone matching, next-run calculation |
 | `apps/server/src/worker.ts` | Worker-side auto-update, update-check, compose write, and container action handlers |
@@ -27,7 +29,7 @@ Cetus owns the update loop for every stack. A registry digest sweep compares eac
 | `apps/server/src/http/app.ts` | Update check routes, bulk apply, metadata routes, dashboard queue, worker messages |
 | `apps/web/src/components/GlobalAutoUpdateDialog.tsx` | Fleet default schedule, health gate, and rollback |
 | `apps/web/src/components/AutoUpdateDialog.tsx` | Per-stack inherit, custom schedule, and service exclusions |
-| `apps/web/src/pages/Dashboard.tsx` | Fleet update queue, Update all, and Schedule controls |
+| `apps/web/src/pages/Dashboard.tsx` | Fleet updates panel, update queue, Update all, and Schedule controls |
 | `apps/web/src/pages/Settings.tsx` | Updates tab with the global schedule |
 | `apps/web/src/pages/StackDetail.tsx` | Stack update status, direct Update button, and per-stack check |
 | `packages/shared/src/types.ts` | `StackMetadata.autoUpdate`, `UpdateCheckResult`, `AutoUpdateState`, `BulkUpdateResult` |
@@ -60,10 +62,19 @@ compose services -> running container image -> local RepoDigests
 - `validateAutoUpdateConfig` rejects an invalid cron, an unknown timezone, non-string service names, and a health grace outside 10 to 600 seconds. The metadata validator applies the same rules to a stack override.
 - Saving the fleet default refreshes the next run for every stack. Saving a stack override refreshes that stack. The scheduler also refreshes all next runs at boot.
 - The scheduler ticks every 15 seconds. A matching cron queues `startAutoUpdateOperation` instead of starting every stack at once. The queue drains with `CETUS_AUTO_UPDATE_CONCURRENCY` running updates (default 2, range 1-8). A 60-second last-run guard prevents duplicate starts in the same minute.
-- A scheduled run skips the stack when the digest cache has no pending service updates, and pulls only the services whose digest changed. Manual Run now and fleet Update all still pull the configured services.
+- A scheduled run skips the stack when the digest cache has no pending service updates, and pulls only the services whose digest changed. Manual Run now pulls the configured services. Fleet Update all queues each stack and narrows to changed services when the queue reaches it.
 - When a pull fails with `toomanyrequests` or HTTP 429, the scheduler records a `rate-limited` run and pauses all scheduled starts for `CETUS_PULL_RATE_LIMIT_BACKOFF_MINUTES` (default 360). Manual runs remain available.
-- The queue is in memory. A manager restart drops pending entries; the next matching schedule queues them again.
+- The scheduled auto-update queue is in memory. A manager restart drops pending scheduled entries; the next matching schedule queues them again. The manual update queue is persistent, see below.
 - The scheduler records `autoupdate.next:<stackId>` after every save and run, and `autoupdate.last:<stackId>` with the last status and operation ID.
+
+### Manual update queue
+
+- `POST /api/updates/apply` collects every visible stack with a pending update, stores the work in the `update_queue` table, and starts the first entry.
+- The manager starts one stack at a time by default. Change `CETUS_UPDATE_QUEUE_CONCURRENCY` to 1-8 when a host has enough headroom.
+- A queue entry stores the stack, host, resolved update config, actor name, and position. The queue survives a manager restart. Entries that were running during a restart are marked failed with a readable reason.
+- The queue starts the next entry when the operation finishes. It skips a stack with another running operation and skips a stack when the digest cache no longer has changed services.
+- Operators can reorder queued entries with the arrows on the Dashboard queue panel. Running entries stay at the front. Removing a queued entry skips it.
+- Completed entries are pruned after seven days, or when more than 100 remain.
 - A scheduled run uses the `Auto-update` system actor. A manual or bulk run uses the signed-in actor. All three create an `update` operation and an audit row.
 
 ### Service selection
@@ -72,6 +83,14 @@ compose services -> running container image -> local RepoDigests
 - `excludeServices` is removed after the allowlist is applied. This is how a stack keeps `gluetun`, a database, or another sidecar on its current image while the rest of the stack updates.
 - Services with a `build:` key are always skipped because they have no registry tag to pull.
 - A manual Run now and the fleet Update all use `manualAutoUpdateConfig`. If the stack has no override, they run with the fleet default forced to enabled, so a disabled schedule never blocks a deliberate action. Explicit stack overrides and exclusions still apply.
+
+### Labels and dependants
+
+- A scheduled run skips any service with `io.zbejas.cetus.update=false` or `com.centurylinklabs.watchtower.enable=false` in its Compose labels. The Cetus label wins when both are present.
+- The stack Update button, Run now, and Update all ignore those labels. They are the deliberate manual paths and still update the service.
+- The digest check stores `autoUpdateDisabled` for each service, so the scheduler can skip a stack whose only changed services are label-disabled.
+- Cetus pulls only the selected services, then runs `docker compose up -d --remove-orphans` for the whole project. If an updated service has running dependants through `depends_on`, `network_mode: service:...`, `ipc`, `pid`, `volumes_from`, or `links`, it adds `--force-recreate` for the whole stack so network and volume dependants reconnect. The health gate then watches the running stack, not just the pulled services.
+- The label disables image updates, not dependency-driven restarts. A labelled service can still be recreated when the stack is force-recreated after another service updates.
 
 ### Health gate and rollback
 
@@ -125,7 +144,10 @@ manager restarts -> reconcileSelfUpdates reads the status file -> operation fini
 |---|---|---|
 | `POST /api/stacks/:id/updates/check` | `stacks:read` | Check one stack and return `UpdateCheckResult` |
 | `POST /api/updates/check` | `stacks:read` | Sweep every visible stack and return counts plus per-stack results |
-| `POST /api/updates/apply` | `updates:apply` | Start an update for every visible stack with an available image update |
+| `POST /api/updates/apply` | `updates:apply` | Queue an update for every visible stack with an available image update |
+| `GET /api/update-queue` | `stacks:read` | Active and recent manual update queue entries |
+| `PUT /api/update-queue/order` | `updates:apply` | Reorder all queued entries |
+| `DELETE /api/update-queue/:id` | `updates:apply` | Remove a queued entry before it starts |
 | `PUT /api/stacks/:id/metadata` | `stacks:write` | Validate and save metadata, including `autoUpdate` |
 | `POST /api/stacks/:id/auto-update/run` | `stacks:deploy` | Start an update operation from the saved config |
 | `POST /api/hosts/:id/self-update` | `updates:apply` | Update a worker Cetus build through its detached helper |
@@ -144,7 +166,7 @@ manager restarts -> reconcileSelfUpdates reads the status file -> operation fini
 - Auto-update skips services with a `build:` key because they have no registry tag to pull. Build and publish those images outside Cetus.
 - `compose up` is not given the selected service list during an auto-update, so dependencies and sidecars outside `services` are reconciled too. Only the selected services are pulled and health-checked.
 - An empty or absent `excludeServices` means no exclusions. Excluding every service is rejected by the dialog and leaves nothing to update.
-- Bulk update skips stacks with a running operation, stacks the key cannot target, stacks with no pending digest update, and stacks whose only pending updates are excluded services. It reports both started and skipped stacks in `BulkUpdateResult`.
+- Bulk update skips stacks with a running operation, stacks the key cannot target, stacks with no pending digest update, and stacks whose only pending updates are excluded services. It reports started, queued, and skipped stacks in `BulkUpdateResult`.
 - Cetus worker stacks are filtered by the `cetus-worker` stack name or Compose project name. Keep that convention when changing the worker compose file.
 - Stack summaries reuse one `docker ps` snapshot and skip container stats. Only the stack detail page reads `docker stats`. Do not add per-stack `docker compose ps` calls back to the list path.
 - Auto-update starts at most `CETUS_AUTO_UPDATE_CONCURRENCY` operations at once. A large fleet drains its queue over several scheduler ticks instead of starting every pull and recreate in the same minute.

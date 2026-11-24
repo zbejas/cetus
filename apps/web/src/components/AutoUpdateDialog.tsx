@@ -262,6 +262,9 @@ export function AutoUpdateDialog({
             ) : null}
 
             <div className="auto-update-hint">
+              <ShieldCheck size={12} /> Scheduled runs skip services labeled io.zbejas.cetus.update=false or com.centurylinklabs.watchtower.enable=false. The stack Update button and Update all still update them.
+            </div>
+            <div className="auto-update-hint">
               <Clock3 size={12} /> Updates run inside Cetus. No Watchtower container is required.
             </div>
           </>

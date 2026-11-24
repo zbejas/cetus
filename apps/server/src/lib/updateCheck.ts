@@ -3,6 +3,7 @@ import path from "node:path";
 import type { UpdateCheckResult, UpdateCheckService } from "@shared/types.ts";
 import { composePs, docker } from "./docker.ts";
 import { loadComposeServices } from "./composeConfig.ts";
+import { autoUpdateDisabledByLabel } from "./updateLabels.ts";
 
 export interface UpdateCheckTarget {
   dir: string;
@@ -105,6 +106,7 @@ export async function checkComposeUpdates(target: UpdateCheckTarget): Promise<Up
 
   const results: UpdateCheckService[] = [];
   for (const [name, definition] of Object.entries(services)) {
+    const autoUpdateDisabled = autoUpdateDisabledByLabel(definition);
     const imageRef = String(definition?.image ?? "").trim();
     if (!imageRef) {
       if (definition?.build) continue;
@@ -114,6 +116,7 @@ export async function checkComposeUpdates(target: UpdateCheckTarget): Promise<Up
         currentDigest: null,
         latestDigest: null,
         updateAvailable: false,
+        autoUpdateDisabled,
         error: "Service does not define an image.",
       });
       continue;
@@ -127,6 +130,7 @@ export async function checkComposeUpdates(target: UpdateCheckTarget): Promise<Up
         currentDigest: pinned[1].toLowerCase(),
         latestDigest: pinned[1].toLowerCase(),
         updateAvailable: false,
+        autoUpdateDisabled,
       });
       continue;
     }
@@ -138,6 +142,7 @@ export async function checkComposeUpdates(target: UpdateCheckTarget): Promise<Up
         currentDigest: null,
         latestDigest: null,
         updateAvailable: false,
+        autoUpdateDisabled,
         error: "Image is built from a local Dockerfile. Registry checks are skipped.",
       });
       continue;
@@ -159,6 +164,7 @@ export async function checkComposeUpdates(target: UpdateCheckTarget): Promise<Up
       currentDigest,
       latestDigest: remote.digest,
       updateAvailable,
+      autoUpdateDisabled,
       ...(error ? { error } : {}),
     });
   }
