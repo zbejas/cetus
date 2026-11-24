@@ -10,7 +10,7 @@ import { auth, seedAdminFromEnvironment } from "../auth.ts";
 import { config, trustedOrigins } from "../config.ts";
 import { ALL_SCOPES, ROLE_SCOPES, hasScope } from "@shared/scopes.ts";
 import { isPaletteId } from "@shared/palettes.ts";
-import type { Actor, AuditEntry, BulkUpdateResult, OperationType, Role, StackMetadata } from "@shared/types.ts";
+import type { Actor, AuditEntry, BulkUpdateResult, OperationType, Role, StackMetadata, WorkerUpdateBulkResult } from "@shared/types.ts";
 import { ApiError, jsonError } from "../lib/errors.ts";
 import { apiDocsClient, apiDocsHtml } from "../lib/apiDocs.ts";
 import {
@@ -1851,6 +1851,52 @@ export async function createApp() {
       const host = await getHostSummary(params.id);
       if (!host) throw new ApiError(404, "host_not_found", "Host not found.");
       return host;
+    })
+    .post("/api/hosts/self-update", async ({ request }) => {
+      const actor = await actorForScope(request, "updates:apply");
+      const hosts = filterHostsForActor(actor, await listHosts());
+      const started: WorkerUpdateBulkResult["started"] = [];
+      const skipped: WorkerUpdateBulkResult["skipped"] = [];
+      for (const host of hosts) {
+        if (host.kind !== "worker") continue;
+        if (!host.cetusVersion) {
+          skipped.push({ hostId: host.id, hostName: host.name, reason: "This worker has not reported a Cetus version. Update it manually once." });
+          continue;
+        }
+        if (!host.workerUpdateAvailable) continue;
+        if (!host.workerUpdateSupported) {
+          skipped.push({ hostId: host.id, hostName: host.name, reason: "This worker needs a manual update before panel updates work." });
+          continue;
+        }
+        if (host.status !== "online") {
+          skipped.push({ hostId: host.id, hostName: host.name, reason: "Worker is offline." });
+          continue;
+        }
+        const workerStack = db.select().from(schema.stack).where(eq(schema.stack.hostId, host.id)).all()
+          .find((row) => isCetusWorkerStackName(row.name, row.projectName));
+        if (!workerStack) {
+          skipped.push({ hostId: host.id, hostName: host.name, reason: "The worker Cetus stack is not indexed yet." });
+          continue;
+        }
+        try {
+          const operation = startWorkerSelfUpdateOperation(workerStack, actor, request, { trigger: "manual" });
+          started.push({ hostId: host.id, hostName: host.name, operationId: operation.id });
+        } catch (error) {
+          skipped.push({
+            hostId: host.id,
+            hostName: host.name,
+            reason: error instanceof Error ? error.message : "The worker update could not start.",
+          });
+        }
+      }
+      recordAudit({
+        actor,
+        action: "hosts.self-update",
+        resourceType: "instance",
+        metadata: { started: started.length, skipped: skipped.length },
+        request,
+      });
+      return { started, skipped };
     })
     .post("/api/hosts/:id/self-update", async ({ request, params }) => {
       const actor = await actorForScope(request, "updates:apply");

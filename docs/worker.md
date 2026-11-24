@@ -51,7 +51,7 @@ The manager stores only a hash of the enrollment token. The worker consumes the 
 
 ### Update a worker
 
-The worker reports its Cetus version in the host list. When the version is older than the manager and the worker supports self-update, the Hosts page and host detail page show an update button. The worker starts a detached helper, recreates its own container, and reports the result after reconnecting. Global auto-update applies to the hidden worker stack on the same schedule once the worker supports self-update.
+The worker reports its Cetus version in the host list. When the version is older than the manager and the worker supports self-update, the Hosts page and host detail page show an update button. The worker starts a detached helper, recreates its own container, and reports the result after reconnecting. The Hosts page also has an Update all action that starts the same helper for every online worker running an older supported build; offline and pre-self-update workers are reported as skipped. Global auto-update applies to the hidden worker stack on the same schedule once the worker supports self-update.
 
 A worker running a build before the self-update protocol cannot update itself safely. Update it once from its stack directory:
 

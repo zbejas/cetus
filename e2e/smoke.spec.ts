@@ -80,13 +80,14 @@ test("signs in and opens the stack cockpit", async ({ page }) => {
 
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: /settings/i }).first()).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Authentication" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Mail" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Notifications" })).toBeVisible();
-  await page.getByRole("tab", { name: "Backup" }).click();
+  const settingsNav = page.getByRole("navigation", { name: "Settings sections" });
+  await expect(settingsNav.getByRole("button", { name: "Authentication" })).toBeVisible();
+  await expect(settingsNav.getByRole("button", { name: "Mail" })).toBeVisible();
+  await expect(settingsNav.getByRole("button", { name: "Notifications" })).toBeVisible();
+  await settingsNav.getByRole("button", { name: "Backups" }).click();
   await expect(page.getByRole("heading", { name: "Backups", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /run backup/i })).toBeVisible();
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  await settingsNav.getByRole("button", { name: "Appearance" }).click();
   await page.getByRole("button", { name: /^Iris/ }).first().click();
   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.palette)).toBe("iris");
   await expect(page.getByRole("button", { name: /^Iris/ }).first()).toHaveAttribute("data-active", "true");
@@ -231,8 +232,9 @@ test("provisions a user with a one-time invite", async ({ page }) => {
 
   await signIn(page, email, password);
   await page.goto("/settings");
-  await expect(page.getByRole("tab", { name: "Appearance" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Access" })).toHaveCount(0);
+  const settingsNav = page.getByRole("navigation", { name: "Settings sections" });
+  await expect(settingsNav.getByRole("button", { name: "Appearance" })).toBeVisible();
+  await expect(settingsNav.getByRole("button", { name: "Users & invites" })).toHaveCount(0);
 
   await page.context().clearCookies();
   const adminLogin = await page.request.post("/api/auth/sign-in/email", {
@@ -275,7 +277,7 @@ test("stores a per-host registry credential without returning its secret", async
   expect((await duplicate.json()).code).toBe("registry_host_conflict");
 
   await page.goto("/settings");
-  await page.getByRole("tab", { name: "Registries" }).click();
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Registries" }).click();
   await expect(page.getByRole("cell", { name: registry, exact: true })).toBeVisible();
 
   const removed = await page.request.delete(`/api/registries/${credential.id}`);
@@ -322,6 +324,31 @@ test("exposes the update queue and rejects an empty order", async ({ page }) => 
   expect(Array.isArray(view.recent)).toBe(true);
   const empty = await page.request.put("/api/update-queue/order", { data: { ids: [] } });
   expect(empty.status()).toBe(422);
+});
+
+test("navigates settings sections and keeps the section in the URL", async ({ page }) => {
+  await login(page);
+  await page.goto("/settings");
+  const nav = page.getByRole("navigation", { name: "Settings sections" });
+  await expect(nav).toBeVisible();
+  await expect(nav.getByRole("group", { name: "Integrations" })).toBeVisible();
+  await nav.getByRole("button", { name: "Updates" }).click();
+  await expect(page.getByRole("heading", { name: "Global auto-update" })).toBeVisible();
+  await expect(page).toHaveURL(/\?tab=updates/);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Global auto-update" })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "Updates" })).toHaveAttribute("aria-current", "page");
+});
+
+test("exposes bulk worker updates", async ({ page }) => {
+  await login(page);
+  const response = await page.request.post("/api/hosts/self-update", { data: {} });
+  expect(response.status()).toBe(200);
+  const result = await response.json();
+  expect(Array.isArray(result.started)).toBe(true);
+  expect(Array.isArray(result.skipped)).toBe(true);
+  await page.goto("/hosts");
+  await expect(page.getByRole("button", { name: "Update all" })).toBeVisible();
 });
 
 test("rejects an anonymous API request", async ({ page }) => {

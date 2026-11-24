@@ -63,6 +63,21 @@ export function useUpdateWorker() {
   });
 }
 
+export function useUpdateAllWorkers() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.updateAllWorkers,
+    onSuccess: (result) => {
+      client.invalidateQueries({ queryKey: queryKeys.hosts });
+      for (const entry of result.started) {
+        client.invalidateQueries({ queryKey: queryKeys.host(entry.hostId) });
+      }
+      client.invalidateQueries({ queryKey: queryKeys.operations });
+      client.invalidateQueries({ queryKey: ["audit"] });
+    },
+  });
+}
+
 export function useInventory(id: string) {
   return useQuery({ queryKey: queryKeys.inventory(id), queryFn: () => api.inventory(id), enabled: Boolean(id), refetchInterval: 12_000 });
 }

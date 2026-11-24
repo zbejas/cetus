@@ -151,6 +151,7 @@ manager restarts -> reconcileSelfUpdates reads the status file -> operation fini
 | `PUT /api/stacks/:id/metadata` | `stacks:write` | Validate and save metadata, including `autoUpdate` |
 | `POST /api/stacks/:id/auto-update/run` | `stacks:deploy` | Start an update operation from the saved config |
 | `POST /api/hosts/:id/self-update` | `updates:apply` | Update a worker Cetus build through its detached helper |
+| `POST /api/hosts/self-update` | `updates:apply` | Update every online worker running an older supported Cetus build |
 | `PUT /api/settings` | `settings:write` | Save the fleet default under `autoUpdate` |
 
 `GET /api/dashboard` returns cached update entries in `updates`, `updatesCheckedAt`, `updatesFailed`, and the fleet default in `globalAutoUpdate`. The MCP tools `apply_update` and `apply_all_updates` use the same update operation path.

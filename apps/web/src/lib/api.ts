@@ -5,7 +5,6 @@ import type {
   AutoUpdateConfig,
   BackupSummary,
   BulkUpdateResult,
-  UpdateQueueView,
   DashboardData,
   FleetUpdateCheckSummary,
   HostInventory,
@@ -19,6 +18,8 @@ import type {
   StackMetadata,
   StackSummary,
   UpdateCheckResult,
+  UpdateQueueView,
+  WorkerUpdateBulkResult,
 } from "@shared/types";
 import type { PaletteId } from "@shared/palettes";
 
@@ -314,6 +315,8 @@ export const api = {
   operation: (id: string) => request<Operation>(`/api/operations/${id}`),
   updateWorker: (hostId: string) =>
     request<Operation>(`/api/hosts/${hostId}/self-update`, { method: "POST" }),
+  updateAllWorkers: () =>
+    request<WorkerUpdateBulkResult>("/api/hosts/self-update", { method: "POST" }),
   audit: (params: { limit?: number; stackId?: string } = {}) => {
     const query = new URLSearchParams();
     if (params.limit) query.set("limit", String(params.limit));
