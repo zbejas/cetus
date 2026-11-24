@@ -57,7 +57,6 @@ export function StackLogs({
     <LogViewer
       source={source}
       compact={compact}
-      snapshot={remote && !service}
       extraHeader={
         <div className="stack-log-selector">
           <select

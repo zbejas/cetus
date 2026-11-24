@@ -34,7 +34,7 @@ Deep links use `/logs?container=<container-id>&host=<host-id>`. The page accepts
 | Local container | `GET /api/containers/:id/logs/stream` spawns `docker logs -f --tail N --timestamps` and aborts the process when the client disconnects |
 | Worker container | Manager sends `container.logs.start` over the worker WebSocket; the worker runs the same Docker command and streams `container.logs.chunk` messages until `container.logs.end` or the manager sends `container.logs.stop` |
 | Local stack | `GET /api/stacks/:id/logs/stream` follows `docker compose logs` |
-| Worker stack, all services | One-shot `logs.request` snapshot, labeled `SNAPSHOT` in the UI |
+| Worker stack, all services | Manager sends `stack.logs.start`; the worker follows `docker compose logs` and streams `stack.logs.chunk` messages until `stack.logs.end` or the manager sends `stack.logs.stop` |
 | Worker stack, one service | Live container stream for that service |
 
 `GET /api/logs/sources` returns the flattened container list with host, stack, service, state, and image. `logs:read` is required. API-key host and stack targets are enforced on the source list and on every stream.
@@ -43,7 +43,6 @@ Deep links use `/logs?container=<container-id>&host=<host-id>`. The page accepts
 
 - Logs are not persisted, indexed, or searchable after the pane is closed. There is no SQL engine, alerting, or webhook matching.
 - The viewer has no terminal. Stack exec remains a separate, non-interactive console.
-- Worker stack streams for all services remain a snapshot because the worker protocol does not yet follow Compose logs.
 - A stopped container ends its stream after the tail and stays on `ENDED`. Live container and stack streams retry network errors up to eight times with backoff, and retry a clean close up to three times while the source still reports running. Each retry re-reads a small tail and drops already-seen timestamps.
 - The log workspace is one page per browser session. Split panes are not saved to the server.
 - The `/logs` page removes the shared `1680px` content cap so the source list and log panes use the whole window. Other pages keep the cap.

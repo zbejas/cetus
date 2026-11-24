@@ -1,6 +1,6 @@
 # Worker mode - current slice
 
-Cetus workers are headless processes that dial out to one manager. This slice covers enrollment, live inventory, stack snapshots, compose edits, deploy and lifecycle commands, delete to trash, managed container actions, and log reads. Remote stack exec, snapshot restore, interactive terminals, and host shell are not enabled.
+Cetus workers are headless processes that dial out to one manager. This slice covers enrollment, live inventory, stack snapshots, compose edits, deploy and lifecycle commands, delete to trash, managed container actions, and live container and stack logs. Remote stack exec, snapshot restore, interactive terminals, and host shell are not enabled.
 
 ## Key files
 
@@ -77,6 +77,10 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 | Worker to manager | `container.logs.chunk` | Streamed log text for the request ID |
 | Manager to worker | `container.logs.stop` | Stop a live container log process |
 | Worker to manager | `container.logs.end` | Stream finished |
+| Manager to worker | `stack.logs.start` | Stack name, project name, tail count, timestamps, request ID |
+| Worker to manager | `stack.logs.chunk` | Streamed Compose log text for the request ID |
+| Manager to worker | `stack.logs.stop` | Stop a live stack log process |
+| Worker to manager | `stack.logs.end` | Stream finished |
 | Manager to worker | `snapshot.request` | Force a fresh snapshot |
 
 ## What works
@@ -88,6 +92,7 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - Deploy, start, stop, restart, down, and update through the manager.
 - Per-service start, stop, and restart through the manager.
 - Log reads through the manager, including live container log streams over `container.logs.start`, `container.logs.chunk`, and `container.logs.stop`.
+- Live all-service stack logs through `stack.logs.start`, `stack.logs.chunk`, and `stack.logs.stop`. The worker follows `docker compose logs` and streams every service in the stack.
 - Remote stack metadata writes, including auto-update schedules, through `metadata.write` and `metadata.written`.
 - Remote compose and env edits through `compose.write` and `compose.written`. The worker validates YAML, snapshots the previous compose file under `.cetus/snapshots`, and writes atomically. A stale `baseHash` returns a conflict instead of overwriting.
 - Remote stack delete. The worker runs `compose down`, snapshots the compose file, and moves the stack directory to `data/trash` on the worker. The manager removes the index row after the operation succeeds.
@@ -100,7 +105,6 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - Remote snapshot listing and restore. `PUT /api/stacks/:id/snapshots/:file/restore` returns `501` for a worker stack, and the remote snapshot list stays empty. The worker still snapshots compose files on save and delete.
 - Remote stack exec and remote interactive terminals. The API returns `501` and the UI disables those controls.
 - Host shell is not shipped.
-- Remote stack-wide live logs. Worker container logs stream live; a whole-stack request returns a one-shot `SNAPSHOT` because the worker protocol does not follow Compose logs yet.
 - Worker TLS fingerprint pinning. Use `wss://` and a trusted certificate. The enrollment token and worker secret are the only auth factors today.
 
 ## Gotchas

@@ -95,6 +95,8 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [autoUpdateOpen, setAutoUpdateOpen] = useState(false);
   const dockRef = useRef<HTMLElement | null>(null);
+  const operationOutputRef = useRef<HTMLPreElement | null>(null);
+  const operationOutputPinned = useRef(true);
 
   function openServiceLogs(serviceName: string) {
     setSelectedService(serviceName);
@@ -140,6 +142,18 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
   const lastOperationStatus = useRef<string | null>(null);
 
   const operation = useOperation(operationId);
+
+  useEffect(() => {
+    operationOutputPinned.current = true;
+  }, [operationId]);
+
+  useEffect(() => {
+    const node = operationOutputRef.current;
+    if (!node) return;
+    if (operation.data?.status === "running" || operationOutputPinned.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [operation.data?.output, operation.data?.status]);
 
   useEffect(() => {
     if (!stack) return;
@@ -474,7 +488,15 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
             <span className="mono muted" style={{ marginLeft: "auto", fontSize: 11 }}>{shortId(operation.data.id)}</span>
             <button className="btn btn-ghost btn-sm" onClick={() => setOperationId(null)} aria-label="Dismiss operation"><X size={13} /></button>
           </div>
-          <pre className="log-view" style={{ minHeight: 0, maxHeight: 140, padding: "9px 12px" }}>
+          <pre
+            ref={operationOutputRef}
+            className="log-view"
+            style={{ minHeight: 0, maxHeight: 140, padding: "9px 12px" }}
+            onScroll={(event) => {
+              const node = event.currentTarget;
+              operationOutputPinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 24;
+            }}
+          >
             {operation.data.output.slice(-4000) || "Waiting for output..."}
           </pre>
         </div>
