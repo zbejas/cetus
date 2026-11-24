@@ -2,7 +2,7 @@ import { and, eq, gte, lt } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import type { UpdateCheckResult } from "@shared/types.ts";
-import { checkComposeUpdates } from "./updateCheck.ts";
+import { applyCheckServices, checkComposeUpdates, pruneCheckServices } from "./updateCheck.ts";
 import { requestWorkerUpdateCheck } from "./remote.ts";
 
 type StackRow = typeof schema.stack.$inferSelect;
@@ -93,27 +93,20 @@ export function pendingUpdateServices(
   return [...names];
 }
 
-export function markAutoUpdateApplied(stackId: string, services?: string[], excludeServices?: string[]) {
+export function markUpdateApplied(stackId: string, services?: string[], excludeServices?: string[]) {
   const check = readUpdateCheck(stackId);
   if (!check) return;
-  const selected = services?.length ? new Set(services) : null;
-  const excluded = new Set(excludeServices ?? []);
-  const next: UpdateCheckResult = {
-    ...check,
+  writeUpdateCheck(stackId, {
+    ...applyCheckServices(check, services, excludeServices),
     checkedAt: new Date().toISOString(),
-    services: check.services.map((service) => {
-      if (selected && !selected.has(service.service)) return service;
-      if (excluded.has(service.service)) return service;
-      if (!service.latestDigest) return service;
-      return {
-        ...service,
-        currentDigest: service.latestDigest,
-        updateAvailable: false,
-        error: undefined,
-      };
-    }),
-  };
-  next.available = next.services.some((service) => service.updateAvailable);
+  });
+}
+
+export function pruneUpdateCheckServices(stackId: string, serviceNames: string[]) {
+  const check = readUpdateCheck(stackId);
+  if (!check) return;
+  const next = pruneCheckServices(check, serviceNames);
+  if (next.services.length === check.services.length) return;
   writeUpdateCheck(stackId, next);
 }
 

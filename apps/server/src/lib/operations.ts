@@ -25,7 +25,7 @@ import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext, setAut
 import { pullRateLimitBackoffMinutes } from "./rateLimit.ts";
 import { manualAutoUpdateConfig, resolveAutoUpdate } from "./autoUpdateConfig.ts";
 import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
-import { markAutoUpdateApplied } from "./updateCheckState.ts";
+import { markUpdateApplied, pruneUpdateCheckServices } from "./updateCheckState.ts";
 import { notifyEvent } from "./notifications.ts";
 import { getSelfInfo, isSelfUpdateTarget } from "./selfInfo.ts";
 import { refreshManagerRegistryConfig } from "./registries.ts";
@@ -173,6 +173,9 @@ export async function refreshStackAfterOperation(stackId: string, deployed: bool
   invalidateStackCache(stackId);
   const detail = await getStackDetail(stackId);
   if (!detail) return;
+  if (detail.services.length > 0) {
+    pruneUpdateCheckServices(stackId, detail.services.map((service) => service.name));
+  }
   db.update(schema.stack).set({
     status: detail.status,
     updatedAt: new Date(),
@@ -432,7 +435,7 @@ async function reconcileSelfUpdatesOnce() {
             const config = resolveAutoUpdate(readMetadata(stackRow), readGlobalAutoUpdate()).config;
             recordAutoUpdateRun(operation.stackId, success ? "success" : "failed", operation.id);
             refreshAutoUpdateNext(operation.stackId, config);
-            if (success) markAutoUpdateApplied(operation.stackId, config?.services, config?.excludeServices);
+            if (success) markUpdateApplied(operation.stackId, config?.services, config?.excludeServices);
           }
         }
         await refreshStackAfterOperation(operation.stackId, success);
@@ -561,6 +564,9 @@ export function startComposeOperation(input: ComposeOperationInput): Operation {
       }
       const status = exitCode === 0 ? "success" : "failed";
       finishOperation(operation.id, status, exitCode);
+      if (status === "success" && input.type === "update") {
+        markUpdateApplied(stackRow.id);
+      }
       await refreshStackAfterOperation(stackRow.id, Boolean(input.deployed && exitCode === 0));
     } catch (error) {
       appendOutput(operation.id, `\n[cetus] ${error instanceof Error ? error.message : String(error)}\n`);
@@ -703,7 +709,7 @@ export function startAutoUpdateOperation(
       }
       await refreshStackAfterOperation(stackRow.id, result.status === "success");
       if (result.status === "success") {
-        markAutoUpdateApplied(stackRow.id, config.services, config.excludeServices);
+        markUpdateApplied(stackRow.id, config.services, config.excludeServices);
       }
     } catch (error) {
       appendOutput(operation.id, `[cetus] ${error instanceof Error ? error.message : String(error)}\n`);
