@@ -68,7 +68,7 @@
 | O2 | Metrics are sampled every 10 seconds and kept for 24 hours, with 1-minute SQLite rollups | Useful history without a time-series database. |
 | O3 | Docker events are kept in a 10,000-event ring per host and merged with audit | Useful activity feed without unbounded storage. |
 | O4 | Health uses Docker health plus optional HTTP and TCP probes | Covers both container and application health. |
-| O5 | Auto-update is opt-in per stack with cron and timezone | Operator control. Never surprise updates. |
+| O5 | Auto-update is opt-in with a fleet default plus per-stack cron, timezone, and service exclusions | Operator control. The default is off, and explicit stack metadata wins. |
 | O6 | Failed updates roll back to previous image IDs and alert | Safer than leaving a broken stack running. |
 | O7 | Update checks run every 6 hours with cache and jitter | Timely without hammering registries. |
 | O8 | Private registries use host Docker config plus encrypted overrides | Works with existing credentials and supports exceptions. |
@@ -76,7 +76,9 @@
 | O10 | Channels are ntfy, SMTP, Discord, Slack, Telegram, and generic webhook | Covers the operator's requested set. |
 | O11 | Backup is local scheduled plus download and restore | Simple, inspectable, no cloud dependency. |
 | O12 | System df is included; guided prune is post-v1 | Prune needs its own preview and confirmation surface. |
-| O13 | Standalone containers are fully managed and labeled unmanaged | The operator asked for the full Docker surface while keeping Compose primary. |
+| O13 | Standalone containers are inventoried and read-only | The operator wants edits limited to containers and stacks that Cetus owns. Keeps Compose primary and avoids lifecycle changes outside the stack directory. |
+| O14 | The Cetus worker stack is hidden from fleet lists, sweeps, and bulk updates | Cetus must not update the process that runs Cetus. Direct stack URLs still work. |
+| O15 | Remote stack files use explicit `compose.write` and delete messages with base hash checks | Worker remains the source of truth, and stale edits are rejected instead of overwriting. |
 
 ## Delivery
 

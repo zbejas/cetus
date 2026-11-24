@@ -1,6 +1,6 @@
 # Worker mode - current slice
 
-Cetus workers are headless processes that dial out to one manager. This slice covers enrollment, live inventory, stack snapshots, deploy and lifecycle commands, and log reads. Remote compose editing, remote delete, and host shell are not enabled.
+Cetus workers are headless processes that dial out to one manager. This slice covers enrollment, live inventory, stack snapshots, compose edits, deploy and lifecycle commands, delete to trash, managed container actions, and log reads. Remote stack exec, snapshot restore, interactive terminals, and host shell are not enabled.
 
 ## Key files
 
@@ -65,6 +65,10 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 | Worker to manager | `operation.finished` | Exit code, status, deployed flag, optional `autoUpdateStatus` |
 | Manager to worker | `metadata.write` | Request ID, stack name, and the full `cetus.json` object |
 | Worker to manager | `metadata.written` | Request ID or error |
+| Manager to worker | `compose.write` | Request ID, stack name, optional compose text, optional env text, optional base hash |
+| Worker to manager | `compose.written` | Request ID, new compose and env text, hashes, or a conflict error |
+| Manager to worker | `container.action` | Request ID, container ID, and a start, stop, restart, pause, unpause, or remove action |
+| Worker to manager | `container.actioned` | Request ID, command output, or an error |
 | Manager to worker | `update-check` | Request ID and a batch of stack names and compose files |
 | Worker to manager | `update-check.result` | Request ID and one registry result per stack |
 | Manager to worker | `logs.request` | Stack name or container ID, tail count, timestamps, request ID |
@@ -85,22 +89,28 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - Per-service start, stop, and restart through the manager.
 - Log reads through the manager, including live container log streams over `container.logs.start`, `container.logs.chunk`, and `container.logs.stop`.
 - Remote stack metadata writes, including auto-update schedules, through `metadata.write` and `metadata.written`.
+- Remote compose and env edits through `compose.write` and `compose.written`. The worker validates YAML, snapshots the previous compose file under `.cetus/snapshots`, and writes atomically. A stale `baseHash` returns a conflict instead of overwriting.
+- Remote stack delete. The worker runs `compose down`, snapshots the compose file, and moves the stack directory to `data/trash` on the worker. The manager removes the index row after the operation succeeds.
+- Managed container start, stop, restart, pause, unpause, and remove through `container.action` and `container.actioned`. The worker rejects standalone containers without a Compose project label.
 - Remote registry digest checks and scheduled auto-updates through `update-check` and `auto-update`.
-- Remote stacks appear in the dashboard, stacks table, host page, and MCP list tools.
+- Remote stacks appear in the dashboard, stacks table, host page, and MCP list tools, except the Cetus worker stack itself.
 
 ## What is not in this slice
 
-- Remote compose editing and snapshots. `PUT /api/stacks/:id/compose` returns `501 remote_edit_unsupported`.
-- Remote delete. Use `down` to stop a remote stack.
-- Remote container actions and remote stack exec. The API returns `501` and the UI disables those controls.
-- Remote interactive terminals and host shell are not shipped.
+- Remote snapshot listing and restore. `PUT /api/stacks/:id/snapshots/:file/restore` returns `501` for a worker stack, and the remote snapshot list stays empty. The worker still snapshots compose files on save and delete.
+- Remote stack exec and remote interactive terminals. The API returns `501` and the UI disables those controls.
+- Host shell is not shipped.
 - Remote stack-wide live logs. Worker container logs stream live; a whole-stack request returns a one-shot `SNAPSHOT` because the worker protocol does not follow Compose logs yet.
 - Worker TLS fingerprint pinning. Use `wss://` and a trusted certificate. The enrollment token and worker secret are the only auth factors today.
 
 ## Gotchas
 
-- The manager stores a worker stack's compose and env text from the last snapshot. The worker is the source of truth on disk.
+- The manager stores a worker stack's compose and env text from the last snapshot. The worker is the source of truth on disk. After a successful `compose.write`, the manager updates its cache from the acknowledgement.
+- A worker compose write uses `baseHash` to detect an out-of-band change. A conflict leaves the worker file untouched and returns `409` to the editor.
+- A worker delete moves the stack directory to `data/trash` on the worker, not on the manager. Back up the worker data directory if trash needs to survive a host loss.
 - A worker command is not idempotent if the WebSocket drops after the command starts. The operation row keeps the error, and the worker sends a fresh snapshot on reconnect.
+- The shared image healthcheck exits `0` when `CETUS_MODE=worker`. A worker does not serve HTTP, so probing `/api/health` would mark the container unhealthy and the stack degraded. Liveness over the worker socket is tracked separately with heartbeats.
+- A stack whose name or Compose project is `cetus-worker` is hidden from fleet lists, registry sweeps, and bulk updates. Keep the `compose/worker.yaml` project name when changing the worker recipe.
 - The manager filters host and stack results for API keys with host or stack targets. Keep `keyRestrictions` and `filterHostsForActor` / `filterStacksForActor` in sync when adding routes.
 - The worker shares the Docker socket with its own Cetus container. Do not mount a remote Docker socket over a network.
 

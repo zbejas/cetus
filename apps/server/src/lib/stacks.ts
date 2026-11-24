@@ -8,7 +8,11 @@ import * as schema from "../db/schema.ts";
 import { config } from "../config.ts";
 import { readAutoUpdateState, refreshAutoUpdateNext } from "./autoUpdateState.ts";
 import { clearUpdateCheck, listUpdateChecks, readUpdateCheck } from "./updateCheckState.ts";
-import { isValidCron } from "./cron.ts";
+import { resolveAutoUpdate, validateAutoUpdateConfig } from "./autoUpdateConfig.ts";
+import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
+import { isCetusWorkerStackName } from "./cetusWorker.ts";
+
+export { isCetusWorkerStackName } from "./cetusWorker.ts";
 import type {
   ServiceState,
   SnapshotInfo,
@@ -19,7 +23,14 @@ import type {
 } from "@shared/types.ts";
 import { composePs, getStats, parseLabels } from "./docker.ts";
 import { LOCAL_HOST_ID, ensureLocalHost, getHostRow, hostRowToSummary } from "./hosts.ts";
-import { getRemoteStack, type RemoteStackSnapshot } from "./remote.ts";
+import {
+  getRemoteStack,
+  requestWorkerComposeWrite,
+  requestWorkerMetadataWrite,
+  updateRemoteStackFiles,
+  updateRemoteStackMetadata,
+  type RemoteStackSnapshot,
+} from "./remote.ts";
 import { ApiError } from "./errors.ts";
 
 type StackRow = typeof schema.stack.$inferSelect;
@@ -65,30 +76,7 @@ export function readMetadata(row: StackRow): StackMetadata {
 }
 
 export function validateStackMetadata(metadata: StackMetadata) {
-  const auto = metadata.autoUpdate;
-  if (!auto) return;
-  if (!auto.cron || !isValidCron(auto.cron)) {
-    throw new ApiError(422, "auto_update_cron_invalid", "Auto-update cron must be a valid five-field expression.");
-  }
-  if (!auto.timezone) {
-    throw new ApiError(422, "auto_update_timezone_invalid", "Auto-update timezone is required.");
-  }
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: auto.timezone }).format(new Date());
-  } catch {
-    throw new ApiError(422, "auto_update_timezone_invalid", `Unknown timezone: ${auto.timezone}`);
-  }
-  if (auto.services !== undefined) {
-    if (!Array.isArray(auto.services) || auto.services.some((name) => typeof name !== "string" || !name.trim())) {
-      throw new ApiError(422, "auto_update_services_invalid", "Auto-update services must be a list of service names.");
-    }
-  }
-  if (auto.healthGraceSeconds !== undefined) {
-    const grace = Number(auto.healthGraceSeconds);
-    if (!Number.isFinite(grace) || grace < 10 || grace > 600) {
-      throw new ApiError(422, "auto_update_grace_invalid", "Health grace must be between 10 and 600 seconds.");
-    }
-  }
+  if (metadata.autoUpdate) validateAutoUpdateConfig(metadata.autoUpdate);
 }
 
 export function findComposeFile(dir: string): string | null {
@@ -271,9 +259,10 @@ export function buildStackSummary(row: StackRow, host: HostRow, services?: Servi
 }
 
 export async function listStacks(hostId?: string): Promise<StackSummary[]> {
-  const rows = hostId
+  const rows = (hostId
     ? db.select().from(schema.stack).where(eq(schema.stack.hostId, hostId)).all()
-    : db.select().from(schema.stack).all();
+    : db.select().from(schema.stack).all())
+    .filter((row) => !isCetusWorkerStackName(row.name, row.projectName));
   const hosts = new Map(db.select().from(schema.host).all().map((row) => [row.id, row]));
   const checks = listUpdateChecks();
 
@@ -322,12 +311,15 @@ export async function getStackDetail(id: string): Promise<StackDetail | null> {
   if (!host) return null;
   const autoUpdateState = readAutoUpdateState(row.id);
   const updateCheck = readUpdateCheck(row.id);
+  const globalAutoUpdate = readGlobalAutoUpdate();
 
   if (host.kind === "worker") {
     const remote = getRemoteStack(row.hostId, row.name);
     if (!remote) return null;
     const summary = buildStackSummary(row, host, remote.services);
     summary.updateAvailable = updateCheck?.available ?? false;
+    const metadata = remote.metadata ?? readMetadata(row);
+    const resolved = resolveAutoUpdate(metadata, globalAutoUpdate);
     return {
       ...summary,
       status: remote.status ?? summary.status,
@@ -335,18 +327,22 @@ export async function getStackDetail(id: string): Promise<StackDetail | null> {
       env: remote.env,
       composeHash: hashText(remote.compose),
       envHash: hashText(remote.env),
-      metadata: remote.metadata ?? readMetadata(row),
+      metadata,
       services: remote.services,
       snapshots: [],
       profiles: remote.profiles ?? [],
       host: hostRowToSummary(host),
       autoUpdateState,
       updateCheck,
+      globalAutoUpdate,
+      effectiveAutoUpdate: resolved.config,
+      autoUpdateSource: resolved.source,
     };
   }
 
   const services = await getServicesForStack(row);
   const metadata = readMetadata(row);
+  const resolved = resolveAutoUpdate(metadata, globalAutoUpdate);
   const composePath = path.join(row.dir, row.composeFile);
   const envPath = path.join(row.dir, ".env");
   const compose = fs.existsSync(composePath) ? fs.readFileSync(composePath, "utf8") : "";
@@ -366,6 +362,9 @@ export async function getStackDetail(id: string): Promise<StackDetail | null> {
     host: hostRowToSummary(host),
     autoUpdateState,
     updateCheck,
+    globalAutoUpdate,
+    effectiveAutoUpdate: resolved.config,
+    autoUpdateSource: resolved.source,
   };
 }
 
@@ -401,16 +400,23 @@ function atomicWrite(file: string, content: string) {
   fs.renameSync(temp, file);
 }
 
+export interface SaveStackFilesInput {
+  compose?: string;
+  env?: string;
+  metadata?: StackMetadata;
+  baseHash?: string;
+}
+
 export async function saveStackFiles(
   id: string,
-  input: { compose?: string; env?: string; metadata?: StackMetadata; baseHash?: string },
+  input: SaveStackFilesInput,
   actorName: string,
 ): Promise<StackDetail> {
   const row = getStackRow(id);
   if (!row) throw new ApiError(404, "stack_not_found", "Stack not found.");
   const owner = getHostRow(row.hostId);
   if (owner?.kind === "worker") {
-    throw new ApiError(501, "remote_edit_unsupported", "Remote compose editing is not part of the first worker slice. Actions and logs work.");
+    return saveRemoteStackFiles(row, input, actorName);
   }
   const composePath = path.join(row.dir, row.composeFile);
   const current = fs.existsSync(composePath) ? fs.readFileSync(composePath, "utf8") : "";
@@ -455,8 +461,54 @@ export async function saveStackFiles(
   }).where(eq(schema.stack.id, id)).run();
 
   serviceCache.delete(id);
-  refreshAutoUpdateNext(id, metadata);
+  refreshAutoUpdateNext(id, resolveAutoUpdate(metadata, readGlobalAutoUpdate()).config);
   return (await getStackDetail(id))!;
+}
+
+async function saveRemoteStackFiles(
+  row: StackRow,
+  input: SaveStackFilesInput,
+  actorName: string,
+): Promise<StackDetail> {
+  if (input.metadata !== undefined) validateStackMetadata(input.metadata);
+  if (input.compose !== undefined) {
+    const validation = validateComposeText(input.compose);
+    if (!validation.ok) {
+      throw new ApiError(422, "compose_invalid", validation.errors.join("\n"), validation.errors);
+    }
+  }
+
+  if (input.compose !== undefined || input.env !== undefined) {
+    const written = await requestWorkerComposeWrite(row.hostId, row.name, {
+      compose: input.compose,
+      env: input.env,
+      baseHash: input.baseHash,
+    });
+    updateRemoteStackFiles(row.hostId, row.name, written);
+  }
+
+  if (input.metadata !== undefined) {
+    await requestWorkerMetadataWrite(row.hostId, row.name, input.metadata as Record<string, unknown>);
+    updateRemoteStackMetadata(row.hostId, row.name, input.metadata);
+    db.update(schema.stack).set({
+      metadata: JSON.stringify(input.metadata),
+      displayName: input.metadata.displayName ?? row.displayName,
+      description: input.metadata.description ?? row.description,
+      tags: JSON.stringify(input.metadata.tags ?? parseJson<string[]>(row.tags, [])),
+      icon: input.metadata.icon ?? row.icon,
+      projectName: input.metadata.projectName ?? row.projectName,
+      updatedAt: new Date(),
+    }).where(eq(schema.stack.id, row.id)).run();
+  } else {
+    db.update(schema.stack).set({ updatedAt: new Date() }).where(eq(schema.stack.id, row.id)).run();
+  }
+
+  serviceCache.delete(row.id);
+  const metadata = input.metadata ?? readMetadata(row);
+  refreshAutoUpdateNext(row.id, resolveAutoUpdate(metadata, readGlobalAutoUpdate()).config);
+  const detail = await getStackDetail(row.id);
+  if (!detail) throw new ApiError(404, "stack_not_found", "Stack not found.");
+  return detail;
 }
 
 export async function restoreSnapshot(id: string, file: string, actorName: string) {
@@ -502,6 +554,29 @@ export function moveToTrash(source: string, target: string) {
   }
 }
 
+const remoteDeleteTombstones = new Map<string, number>();
+
+function remoteDeleteKey(hostId: string, name: string) {
+  return `${hostId}:${name}`;
+}
+
+export function markRemoteStackDeleting(hostId: string, name: string, ttlMs = 60_000) {
+  remoteDeleteTombstones.set(remoteDeleteKey(hostId, name), Date.now() + ttlMs);
+}
+
+export function clearRemoteStackDeleting(hostId: string, name: string) {
+  remoteDeleteTombstones.delete(remoteDeleteKey(hostId, name));
+}
+
+function isRemoteStackDeleting(hostId: string, name: string) {
+  const key = remoteDeleteKey(hostId, name);
+  const expiresAt = remoteDeleteTombstones.get(key);
+  if (!expiresAt) return false;
+  if (expiresAt > Date.now()) return true;
+  remoteDeleteTombstones.delete(key);
+  return false;
+}
+
 export async function deleteStack(id: string, actorName: string) {
   const row = getStackRow(id);
   if (!row) throw new ApiError(404, "stack_not_found", "Stack not found.");
@@ -519,6 +594,7 @@ export function syncRemoteStacks(hostId: string, remoteStacks: RemoteStackSnapsh
   const seen = new Set<string>();
 
   for (const remote of remoteStacks) {
+    if (isRemoteStackDeleting(hostId, remote.name)) continue;
     seen.add(remote.name);
     const metadata = remote.metadata ?? {};
     const values = {

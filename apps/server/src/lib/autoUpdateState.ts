@@ -1,8 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
-import type { AutoUpdateState, StackMetadata } from "@shared/types.ts";
+import type { AutoUpdateConfig, AutoUpdateState, StackMetadata } from "@shared/types.ts";
 import { nextCronDate } from "./cron.ts";
+import { resolveAutoUpdate } from "./autoUpdateConfig.ts";
+import { isCetusWorkerStackName } from "./cetusWorker.ts";
 
 interface StoredRun {
   at: string;
@@ -54,8 +56,7 @@ export function recordAutoUpdateRun(stackId: string, status: string, operationId
   }));
 }
 
-export function refreshAutoUpdateNext(stackId: string, metadata: StackMetadata | null | undefined) {
-  const config = metadata?.autoUpdate;
+export function refreshAutoUpdateNext(stackId: string, config: AutoUpdateConfig | null | undefined) {
   if (!config?.enabled || !config.cron) {
     db.delete(schema.setting).where(eq(schema.setting.key, nextKey(stackId))).run();
     return null;
@@ -64,4 +65,20 @@ export function refreshAutoUpdateNext(stackId: string, metadata: StackMetadata |
   if (next) writeSetting(nextKey(stackId), next);
   else db.delete(schema.setting).where(eq(schema.setting.key, nextKey(stackId))).run();
   return next;
+}
+
+export function refreshAllAutoUpdateNextRuns(global: AutoUpdateConfig) {
+  for (const row of db.select().from(schema.stack).all()) {
+    if (isCetusWorkerStackName(row.name, row.projectName)) {
+      refreshAutoUpdateNext(row.id, null);
+      continue;
+    }
+    let metadata: StackMetadata = {};
+    try {
+      metadata = JSON.parse(row.metadata) as StackMetadata;
+    } catch {
+      metadata = {};
+    }
+    refreshAutoUpdateNext(row.id, resolveAutoUpdate(metadata, global).config);
+  }
 }

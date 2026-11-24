@@ -171,8 +171,9 @@ bun apps/server/src/worker.ts`
                   </div>
 
                   <div style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.55 }}>
-                    After the worker connects, it appears on the overview and in the stacks table. Remote compose editing
-                    and interactive terminals are not part of this slice; deploy, lifecycle, inventory, and logs are.
+                    After the worker connects, it appears on the overview and in the stacks table. Compose edits,
+                    delete, container actions, deploy, lifecycle, inventory, and logs work over the worker channel.
+                    Remote exec, snapshot restore, and interactive terminals are not part of this slice.
                   </div>
                 </div>
               ) : (

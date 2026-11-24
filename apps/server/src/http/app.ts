@@ -10,7 +10,7 @@ import { auth, seedAdminFromEnvironment } from "../auth.ts";
 import { config, trustedOrigins } from "../config.ts";
 import { ALL_SCOPES, ROLE_SCOPES, hasScope } from "@shared/scopes.ts";
 import { isPaletteId } from "@shared/palettes.ts";
-import type { Actor, AuditEntry, OperationType, Role, StackMetadata } from "@shared/types.ts";
+import type { Actor, AuditEntry, BulkUpdateResult, OperationType, Role, StackMetadata } from "@shared/types.ts";
 import { ApiError, jsonError } from "../lib/errors.ts";
 import { apiDocsClient, apiDocsHtml } from "../lib/apiDocs.ts";
 import {
@@ -36,9 +36,11 @@ import {
 import { listLogSources } from "../lib/logSources.ts";
 import { getSettingsView, updateSettings } from "../lib/settings.ts";
 import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext } from "../lib/autoUpdateState.ts";
+import { manualAutoUpdateConfig, resolveAutoUpdate } from "../lib/autoUpdateConfig.ts";
+import { readGlobalAutoUpdate } from "../lib/globalAutoUpdate.ts";
 import { startAutoUpdateScheduler, startBackupScheduler, startRetentionScheduler, startUpdateCheckScheduler } from "../lib/scheduler.ts";
 import { createBackup, deleteBackup, getBackup, listBackups, recoverInterruptedBackups, stageRestore } from "../lib/backups.ts";
-import { checkStackForUpdates, checkStacksForUpdates, listUpdateChecks, markAutoUpdateApplied, readUpdateCheck } from "../lib/updateCheckState.ts";
+import { checkStackForUpdates, checkStacksForUpdates, clearUpdateCheck, listUpdateChecks, markAutoUpdateApplied, readUpdateCheck } from "../lib/updateCheckState.ts";
 import { getUserPalette, setUserPalette } from "../lib/preferences.ts";
 import {
   createInviteRecord,
@@ -65,6 +67,7 @@ import {
   LOCAL_HOST_ID,
 } from "../lib/hosts.ts";
 import {
+  clearRemoteStackDeleting,
   createStack,
   getStackDetail,
   getStackRow,
@@ -96,9 +99,10 @@ import {
   failRemoteLogStreamsForHost,
   pushRemoteLogChunk,
   registerRemoteLogStream,
-  requestWorkerMetadataWrite,
+  requestWorkerContainerAction,
+  resolveComposeWrite,
+  resolveContainerAction,
   resolveMetadataWrite,
-  updateRemoteStackMetadata,
   registerWorker,
   rejectLogResponse,
   removePendingWorker,
@@ -322,6 +326,53 @@ function assertContainerTarget(actor: Actor, hostId: string, project: string | n
   const stackId = stackIdForProject(hostId, project);
   assertTarget(actor, hostId, stackId);
   return stackId;
+}
+
+async function runContainerAction(input: {
+  actor: Actor;
+  hostId: string;
+  containerId: string;
+  action: string;
+  auditAction?: string;
+  request?: Request;
+}): Promise<{ ok: true; output: string }> {
+  const allowed = new Set(["start", "stop", "restart", "pause", "unpause", "remove"]);
+  if (!allowed.has(input.action)) {
+    throw new ApiError(400, "invalid_action", "Unsupported container action.");
+  }
+  const container = await findContainerOnHost(input.hostId, input.containerId);
+  if (container.unmanaged) {
+    throw new ApiError(
+      422,
+      "unmanaged_container",
+      "Standalone containers outside Compose stacks are read-only. Add the container to a stack first.",
+    );
+  }
+  assertContainerTarget(input.actor, input.hostId, container.project);
+
+  const owner = getHostRow(input.hostId);
+  let output = "";
+  if (owner?.kind === "worker") {
+    output = await requestWorkerContainerAction(input.hostId, container.id, input.action);
+  } else {
+    const result = await docker(
+      input.action === "remove" ? ["rm", "-f", container.id] : [input.action, container.id],
+      { timeoutMs: 30_000 },
+    );
+    if (result.exitCode !== 0) throw new ApiError(500, "docker_error", result.stderr || "Docker action failed.");
+    output = `${result.stdout}${result.stderr}`;
+  }
+
+  recordAudit({
+    actor: input.actor,
+    action: input.auditAction ?? `container.${input.action}`,
+    resourceType: "container",
+    resourceId: container.id,
+    hostId: input.hostId,
+    stackId: stackIdForProject(input.hostId, container.project) ?? undefined,
+    request: input.request,
+  });
+  return { ok: true, output };
 }
 
 function stackOperationArgs(action: string, profiles: string[] = []): { args: string[]; argsAfter?: string[]; deployed?: boolean } {
@@ -570,7 +621,7 @@ const mcpTools = [
   },
   {
     name: "edit_stack_compose",
-    description: "Save compose, env, or metadata for a local stack. Requires mcp:write and stacks:write. Use baseHash to reject a stale write.",
+    description: "Save compose, env, or metadata for a local or worker stack. Requires mcp:write and stacks:write. Use baseHash to reject a stale write.",
     scope: "stacks:write",
     mode: "write",
     inputSchema: {
@@ -636,7 +687,7 @@ const mcpTools = [
   },
   {
     name: "container_action",
-    description: "Start, stop, restart, pause, unpause, or remove a local container. Requires mcp:write and containers:write.",
+    description: "Start, stop, restart, pause, unpause, or remove a managed Compose container on a local or worker host. Standalone containers are read-only. Requires mcp:write and containers:write.",
     scope: "containers:write",
     mode: "write",
     inputSchema: {
@@ -662,6 +713,13 @@ const mcpTools = [
       additionalProperties: false,
     },
   },
+  {
+    name: "apply_all_updates",
+    description: "Start a health-gated update for every visible stack with an available image update. Requires mcp:write and updates:apply.",
+    scope: "updates:apply",
+    mode: "write",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ] as const;
 
 function mcpStack(actor: Actor, stackId: unknown) {
@@ -675,6 +733,72 @@ function mcpLimit(value: unknown, fallback: number) {
   const parsed = Number(value ?? fallback);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(1, Math.min(Math.floor(parsed), 200));
+}
+
+async function applyVisibleUpdates(actor: Actor, request?: Request): Promise<BulkUpdateResult> {
+  const stacks = filterStacksForActor(actor, await listStacks());
+  const global = readGlobalAutoUpdate();
+  const started: BulkUpdateResult["started"] = [];
+  const skipped: BulkUpdateResult["skipped"] = [];
+  const seen = new Set<string>();
+
+  for (const stack of stacks) {
+    if (!stack.updateAvailable || seen.has(stack.id)) continue;
+    seen.add(stack.id);
+    const row = getStackRow(stack.id);
+    if (!row) {
+      skipped.push({ stackId: stack.id, stackName: stack.displayName, reason: "Stack is no longer indexed." });
+      continue;
+    }
+    if (!actorCanTarget(actor, { hostId: row.hostId, stackId: row.id }, keyRestrictions(actor))) {
+      skipped.push({ stackId: stack.id, stackName: stack.displayName, reason: "Key is restricted to another target." });
+      continue;
+    }
+    const running = db.select().from(schema.operation).where(and(
+      eq(schema.operation.stackId, row.id),
+      eq(schema.operation.status, "running"),
+    )).get();
+    if (running) {
+      skipped.push({ stackId: stack.id, stackName: stack.displayName, reason: "Another operation is already running." });
+      continue;
+    }
+    try {
+      const config = manualAutoUpdateConfig(readMetadata(row), global);
+      const check = readUpdateCheck(row.id);
+      const selected = config.services?.length ? new Set(config.services) : null;
+      const excluded = new Set(config.excludeServices ?? []);
+      const actionable = check?.services.some((service) =>
+        service.updateAvailable
+        && (!selected || selected.has(service.service))
+        && !excluded.has(service.service),
+      ) ?? false;
+      if (!actionable) {
+        skipped.push({
+          stackId: stack.id,
+          stackName: stack.displayName,
+          reason: "Only excluded services have updates.",
+        });
+        continue;
+      }
+      const operation = startAutoUpdateOperation(row.id, actor, request, { config, trigger: "bulk" });
+      started.push({ stackId: row.id, stackName: stack.displayName, operationId: operation.id });
+    } catch (error) {
+      skipped.push({
+        stackId: stack.id,
+        stackName: stack.displayName,
+        reason: error instanceof Error ? error.message : "Update could not start.",
+      });
+    }
+  }
+
+  recordAudit({
+    actor,
+    action: "updates.apply",
+    resourceType: "instance",
+    metadata: { started: started.length, skipped: skipped.length },
+    request,
+  });
+  return { started, skipped };
 }
 
 async function executeMcpTool(actor: Actor, name: string, args: Record<string, any>) {
@@ -886,9 +1010,6 @@ async function executeMcpTool(actor: Actor, name: string, args: Record<string, a
     }
     case "edit_stack_compose": {
       const row = mcpStack(actor, args.stackId);
-      if (getHostRow(row.hostId)?.kind === "worker") {
-        throw new ApiError(501, "remote_edit_unsupported", "Remote compose editing is not supported yet.");
-      }
       const metadata = args.metadata;
       if (metadata !== undefined) {
         if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
@@ -917,9 +1038,6 @@ async function executeMcpTool(actor: Actor, name: string, args: Record<string, a
       const row = mcpStack(actor, args.stackId);
       if (args.confirm !== true || String(args.name ?? "") !== row.name) {
         throw new ApiError(422, "confirm_required", "Pass confirm: true and the exact stack name to delete it.");
-      }
-      if (getHostRow(row.hostId)?.kind === "worker") {
-        throw new ApiError(501, "remote_delete_unsupported", "Remote delete is not supported yet.");
       }
       return startDeleteOperation(row.id, actor);
     }
@@ -978,34 +1096,25 @@ async function executeMcpTool(actor: Actor, name: string, args: Record<string, a
     }
     case "container_action": {
       const hostId = String(args.hostId ?? LOCAL_HOST_ID);
-      if (hostId !== LOCAL_HOST_ID) {
-        throw new ApiError(501, "remote_container_unsupported", "Remote container actions are not supported yet.");
-      }
-      const containerId = dockerTarget(String(args.containerId ?? ""));
-      const container = await findContainerOnHost(hostId, containerId);
-      assertContainerTarget(actor, hostId, container.project);
       const action = String(args.action ?? "");
-      const allowed = new Set(["start", "stop", "restart", "pause", "unpause", "remove"]);
-      if (!allowed.has(action)) throw new ApiError(400, "invalid_action", "Unsupported container action.");
-      const result = await docker(action === "remove" ? ["rm", "-f", container.id] : [action, container.id], { timeoutMs: 30_000 });
-      recordAudit({
+      return runContainerAction({
         actor,
-        action: `mcp.container.${action}`,
-        resourceType: "container",
-        resourceId: container.id,
         hostId,
+        containerId: dockerTarget(String(args.containerId ?? "")),
+        action,
+        auditAction: `mcp.container.${action}`,
       });
-      if (result.exitCode !== 0) throw new ApiError(500, "docker_error", result.stderr || "Docker action failed.");
-      return { ok: true, output: `${result.stdout}${result.stderr}` };
     }
     case "apply_update": {
       const row = mcpStack(actor, args.stackId);
       try {
-        return startAutoUpdateOperation(row.id, actor);
+        return startAutoUpdateOperation(row.id, actor, undefined, { trigger: "manual" });
       } catch (error) {
         throw new ApiError(422, "auto_update_unavailable", error instanceof Error ? error.message : "Auto-update is not configured.");
       }
     }
+    case "apply_all_updates":
+      return applyVisibleUpdates(actor);
     default:
       throw new ApiError(404, "mcp_tool_not_found", `Unknown tool: ${name}`);
   }
@@ -1196,15 +1305,26 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
     const status = message.status === "success" ? "success" : "failed";
     finishOperation(String(message.operationId), status, typeof message.exitCode === "number" ? message.exitCode : null);
     if (operation?.stackId) {
+      if (operation.type === "delete") {
+        if (status === "success") {
+          db.delete(schema.stack).where(eq(schema.stack.id, operation.stackId)).run();
+          clearUpdateCheck(operation.stackId);
+          return;
+        }
+        if (operation.hostId && operation.stackName) {
+          clearRemoteStackDeleting(operation.hostId, operation.stackName);
+        }
+      }
       const autoState = readAutoUpdateState(operation.stackId);
       if (autoState.lastOperationId === operation.id) {
         const autoStatus = typeof message.autoUpdateStatus === "string" ? message.autoUpdateStatus : status;
         recordAutoUpdateRun(operation.stackId, autoStatus, operation.id);
         const row = getStackRow(operation.stackId);
         if (row) {
-          refreshAutoUpdateNext(row.id, readMetadata(row));
+          const autoConfig = resolveAutoUpdate(readMetadata(row), readGlobalAutoUpdate()).config;
+          refreshAutoUpdateNext(row.id, autoConfig);
           if (autoStatus === "success") {
-            markAutoUpdateApplied(row.id, readMetadata(row).autoUpdate?.services);
+            markAutoUpdateApplied(row.id, autoConfig?.services, autoConfig?.excludeServices);
           }
         }
       }
@@ -1239,6 +1359,33 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
 
   if (message.type === "metadata.written") {
     resolveMetadataWrite(String(message.requestId), message.error ? String(message.error) : null);
+    return;
+  }
+
+  if (message.type === "compose.written") {
+    resolveComposeWrite(
+      String(message.requestId),
+      message.error
+        ? null
+        : {
+            compose: typeof message.compose === "string" ? message.compose : undefined,
+            env: typeof message.env === "string" ? message.env : undefined,
+            composeHash: typeof message.composeHash === "string" ? message.composeHash : undefined,
+            envHash: typeof message.envHash === "string" ? message.envHash : undefined,
+          },
+      message.error ? String(message.error) : null,
+      message.code ? String(message.code) : null,
+    );
+    return;
+  }
+
+  if (message.type === "container.actioned") {
+    resolveContainerAction(
+      String(message.requestId),
+      typeof message.output === "string" ? message.output : null,
+      message.error ? String(message.error) : null,
+      message.code ? String(message.code) : null,
+    );
     return;
   }
 
@@ -1572,6 +1719,7 @@ export async function createApp() {
         updates,
         updatesCheckedAt: updates[0]?.checkedAt ?? [...checks.values()].sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))[0]?.checkedAt ?? null,
         updatesFailed,
+        globalAutoUpdate: readGlobalAutoUpdate(),
         actor,
       };
     })
@@ -1684,21 +1832,6 @@ export async function createApp() {
       }
       const metadata = body.metadata as StackMetadata;
       validateStackMetadata(metadata);
-      const owner = getHostRow(row.hostId);
-      if (owner?.kind === "worker") {
-        await requestWorkerMetadataWrite(row.hostId, row.name, metadata as Record<string, unknown>);
-        updateRemoteStackMetadata(row.hostId, row.name, metadata);
-        db.update(schema.stack).set({
-          metadata: JSON.stringify(metadata),
-          displayName: metadata.displayName ?? row.displayName,
-          description: metadata.description ?? row.description,
-          tags: JSON.stringify(metadata.tags ?? []),
-          updatedAt: new Date(),
-        }).where(eq(schema.stack.id, row.id)).run();
-        refreshAutoUpdateNext(row.id, metadata);
-        recordAudit({ actor, action: "stack.metadata", resourceType: "stack", resourceId: row.id, hostId: row.hostId, stackId: row.id, request });
-        return await getStackDetail(row.id);
-      }
       const detail = await saveStackFiles(row.id, { metadata }, actor.name);
       recordAudit({ actor, action: "stack.metadata", resourceType: "stack", resourceId: row.id, hostId: row.hostId, stackId: row.id, request });
       return detail;
@@ -1766,13 +1899,17 @@ export async function createApp() {
         })),
       };
     })
+    .post("/api/updates/apply", async ({ request }) => {
+      const actor = await actorForScope(request, "updates:apply");
+      return applyVisibleUpdates(actor, request);
+    })
     .post("/api/stacks/:id/auto-update/run", async ({ request, params }) => {
       const actor = await actorForScope(request, "stacks:deploy");
       const row = getStackRow(params.id);
       if (!row) throw new ApiError(404, "stack_not_found", "Stack not found.");
       assertTarget(actor, row.hostId, row.id);
       try {
-        return startAutoUpdateOperation(row.id, actor, request);
+        return startAutoUpdateOperation(row.id, actor, request, { trigger: "manual" });
       } catch (error) {
         throw new ApiError(422, "auto_update_unavailable", error instanceof Error ? error.message : "Auto-update is not configured.");
       }
@@ -2475,6 +2612,16 @@ export async function createApp() {
         stacksDir: t.Optional(t.String()),
         allowedOrigins: t.Optional(t.Array(t.String())),
         trustProxy: t.Optional(t.Boolean()),
+        autoUpdate: t.Optional(t.Object({
+          enabled: t.Optional(t.Boolean()),
+          cron: t.Optional(t.String({ maxLength: 120 })),
+          timezone: t.Optional(t.String({ maxLength: 120 })),
+          services: t.Optional(t.Array(t.String({ maxLength: 200 }))),
+          excludeServices: t.Optional(t.Array(t.String({ maxLength: 200 }))),
+          healthCheck: t.Optional(t.Boolean()),
+          rollback: t.Optional(t.Boolean()),
+          healthGraceSeconds: t.Optional(t.Number({ minimum: 10, maximum: 600 })),
+        })),
         oidc: t.Optional(t.Object({
           enabled: t.Optional(t.Boolean()),
           name: t.Optional(t.String({ maxLength: 120 })),
@@ -2745,17 +2892,13 @@ export async function createApp() {
     .post("/api/containers/:id/actions/:action", async ({ request, params, query }) => {
       const actor = await actorForScope(request, "containers:write");
       const hostId = query.hostId ? String(query.hostId) : LOCAL_HOST_ID;
-      assertTarget(actor, hostId, null);
-      if (hostId !== LOCAL_HOST_ID) {
-        throw new ApiError(501, "remote_container_unsupported", "Remote container actions are not supported yet.");
-      }
-      const allowed = new Set(["start", "stop", "restart", "pause", "unpause", "remove"]);
-      if (!allowed.has(params.action)) throw new ApiError(400, "invalid_action", "Unsupported container action.");
-      const args = params.action === "remove" ? ["rm", "-f", params.id] : [params.action, params.id];
-      const result = await docker(args, { timeoutMs: 30_000 });
-      recordAudit({ actor, action: `container.${params.action}`, resourceType: "container", resourceId: params.id, request });
-      if (result.exitCode !== 0) throw new ApiError(500, "docker_error", result.stderr || "Docker action failed.");
-      return { ok: true, output: `${result.stdout}${result.stderr}` };
+      return runContainerAction({
+        actor,
+        hostId,
+        containerId: params.id,
+        action: params.action,
+        request,
+      });
     })
     .post("/mcp", ({ request }) => handleMcp(request))
     .ws("/api/ws/worker", {

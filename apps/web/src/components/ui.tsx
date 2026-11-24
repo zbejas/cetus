@@ -162,6 +162,9 @@ export function Dialog({
       className={cn("dialog", wide && "dialog-wide", className)}
       aria-labelledby={titleId}
       onClose={onClose}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
       onCancel={(event) => {
         event.preventDefault();
         onClose();

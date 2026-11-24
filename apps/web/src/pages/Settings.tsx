@@ -7,6 +7,7 @@ import {
   Ban,
   Bell,
   Boxes,
+  CalendarClock,
   Check,
   Copy,
   DatabaseBackup,
@@ -46,6 +47,7 @@ import {
   ApiError,
   api,
   can,
+  scopeReason,
   type InviteCreated,
   type NotificationChannelInput,
   type NotificationChannelSummary,
@@ -80,15 +82,18 @@ import {
   useUsers,
 } from "../lib/queries";
 import { formatBytes, formatDate, relativeTime, shortId, titleCase } from "../lib/format";
+import { GlobalAutoUpdateDialog } from "../components/GlobalAutoUpdateDialog";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Dialog, EmptyState, IconButton, Input, PageHeader, Skeleton } from "../components/ui";
+import { scheduleLabel } from "../lib/autoUpdate";
 
-type SettingsTab = "general" | "appearance" | "authentication" | "mail" | "access" | "notifications" | "keys" | "mcp" | "audit" | "backup";
+type SettingsTab = "general" | "appearance" | "updates" | "authentication" | "mail" | "access" | "notifications" | "keys" | "mcp" | "audit" | "backup";
 type BadgeTone = "default" | "accent" | "success" | "warn" | "danger" | "info";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Server; scope?: string }[] = [
   { id: "general", label: "General", icon: Server, scope: "settings:read" },
   { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "updates", label: "Updates", icon: CalendarClock, scope: "settings:read" },
   { id: "authentication", label: "Authentication", icon: Fingerprint, scope: "settings:read" },
   { id: "mail", label: "Mail", icon: Mail, scope: "settings:read" },
   { id: "access", label: "Access", icon: Users, scope: "users:read" },
@@ -195,13 +200,14 @@ const MCP_TOOLS: { name: string; mode: "read" | "write"; scopes: string; descrip
   { name: "list_operations", mode: "read", scopes: "stacks:read", description: "List recent operations." },
   { name: "create_stack", mode: "write", scopes: "mcp:write + stacks:write", description: "Create a local Compose stack." },
   { name: "edit_stack_compose", mode: "write", scopes: "mcp:write + stacks:write", description: "Save compose, env, or metadata for a local stack." },
-  { name: "delete_stack", mode: "write", scopes: "mcp:write + stacks:delete", description: "Move a local stack to trash after confirmation." },
+  { name: "delete_stack", mode: "write", scopes: "mcp:write + stacks:delete", description: "Move a stack to trash after confirmation." },
   { name: "deploy_stack", mode: "write", scopes: "mcp:write + stacks:deploy", description: "Deploy a stack, optionally with profiles." },
   { name: "stack_lifecycle", mode: "write", scopes: "mcp:write + stacks:deploy", description: "Start, stop, restart, or down a stack." },
   { name: "service_action", mode: "write", scopes: "mcp:write + stacks:deploy", description: "Start, stop, or restart one service." },
   { name: "stack_exec", mode: "write", scopes: "mcp:write + containers:exec", description: "Run a command in a local service container." },
-  { name: "container_action", mode: "write", scopes: "mcp:write + containers:write", description: "Start, stop, restart, pause, unpause, or remove a local container." },
-  { name: "apply_update", mode: "write", scopes: "mcp:write + updates:apply", description: "Run the configured health-gated auto-update." },
+  { name: "container_action", mode: "write", scopes: "mcp:write + containers:write", description: "Start, stop, restart, pause, unpause, or remove a managed Compose container on any host." },
+  { name: "apply_update", mode: "write", scopes: "mcp:write + updates:apply", description: "Run the configured health-gated auto-update for one stack." },
+  { name: "apply_all_updates", mode: "write", scopes: "mcp:write + updates:apply", description: "Update every visible stack with an available image update." },
 ];
 
 export function SettingsPage() {
@@ -229,7 +235,7 @@ export function SettingsPage() {
 
   return (
     <div>
-      <PageHeader title="Settings" description="Appearance, authentication, mail, access, keys, notifications, and backups." />
+      <PageHeader title="Settings" description="Appearance, updates, authentication, mail, access, keys, notifications, and backups." />
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
         <div
@@ -266,6 +272,7 @@ export function SettingsPage() {
       >
         {tab === "general" ? <GeneralTab /> : null}
         {tab === "appearance" ? <AppearanceTab /> : null}
+        {tab === "updates" ? <UpdatesTab /> : null}
         {tab === "authentication" ? <AuthenticationTab /> : null}
         {tab === "mail" ? <MailTab /> : null}
         {tab === "access" ? <AccessTab /> : null}
@@ -1120,6 +1127,60 @@ function ChannelDialog({
   );
 }
 
+
+function UpdatesTab() {
+  const me = useMe();
+  const settings = useSettings();
+  const [open, setOpen] = useState(false);
+  const canWrite = can(me.data?.actor.scopes, "settings:write");
+
+  if (settings.isLoading) return <PanelSkeleton rows={5} />;
+  if (settings.isError || !settings.data) {
+    return <ErrorPanel title="Update settings could not be loaded" error={settings.error} onRetry={() => settings.refetch()} retrying={settings.isFetching} />;
+  }
+
+  const config = settings.data.autoUpdate;
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <section className="panel">
+        <div className="panel-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <CalendarClock size={15} color="var(--accent)" />
+            <h3>Global auto-update</h3>
+            <Badge tone={config.enabled ? "success" : "default"}>{config.enabled ? "Fleet default on" : "Off"}</Badge>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setOpen(true)}
+            disabled={!canWrite}
+            aria-disabled={!canWrite}
+            title={canWrite ? undefined : scopeReason("settings:write")}
+          >
+            <CalendarClock size={14} /> Configure
+          </Button>
+        </div>
+        <div className="panel-body" style={{ display: "grid", gap: 10 }}>
+          <p style={{ margin: 0, color: "var(--text-soft)", fontSize: 13 }}>
+            Default schedule: <strong>{scheduleLabel(config)}</strong>
+          </p>
+          <p className="help" style={{ margin: 0, maxWidth: "88ch" }}>
+            Stacks without a custom schedule inherit this default. Open a stack's auto-update dialog to give it its own
+            schedule, or uncheck services such as gluetun so they keep their current image.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+            <span className="chip">Health gate {config.healthCheck === false ? "off" : "on"}</span>
+            <span className="chip">Rollback {config.rollback === false ? "off" : "on"}</span>
+            <span className="chip mono">{config.cron}</span>
+            <span className="chip">{config.timezone}</span>
+          </div>
+        </div>
+      </section>
+
+      <GlobalAutoUpdateDialog open={open} config={config} onClose={() => setOpen(false)} />
+    </div>
+  );
+}
 
 function BackupTab() {
   const me = useMe();

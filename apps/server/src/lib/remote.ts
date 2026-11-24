@@ -1,4 +1,5 @@
 import type { HostInventory, ServiceState, StackMetadata, StackStatus } from "@shared/types.ts";
+import { ApiError } from "./errors.ts";
 
 export interface RemoteStackSnapshot {
   name: string;
@@ -40,8 +41,27 @@ const metadataRequests = new Map<string, {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
+
+export interface ComposeWriteResult {
+  compose?: string;
+  env?: string;
+  composeHash?: string;
+  envHash?: string;
+}
+
+const composeRequests = new Map<string, {
+  resolve: (result: ComposeWriteResult) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
 const updateCheckRequests = new Map<string, {
   resolve: (results: Record<string, unknown>[]) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+
+const containerActionRequests = new Map<string, {
+  resolve: (output: string) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -202,6 +222,69 @@ export function requestWorkerMetadataWrite(
   });
 }
 
+export function requestWorkerComposeWrite(
+  hostId: string,
+  stackName: string,
+  input: { compose?: string; env?: string; baseHash?: string },
+): Promise<ComposeWriteResult> {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      composeRequests.delete(requestId);
+      reject(new Error("Worker did not acknowledge the compose write in time."));
+    }, 20_000);
+    composeRequests.set(requestId, { resolve, reject, timer });
+    const sent = sendToWorker(hostId, { type: "compose.write", requestId, stackName, ...input });
+    if (!sent) {
+      clearTimeout(timer);
+      composeRequests.delete(requestId);
+      reject(new Error("Worker is not connected."));
+    }
+  });
+}
+
+export function requestWorkerContainerAction(
+  hostId: string,
+  containerId: string,
+  action: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      containerActionRequests.delete(requestId);
+      reject(new Error("Worker did not acknowledge the container action in time."));
+    }, 45_000);
+    containerActionRequests.set(requestId, { resolve, reject, timer });
+    const sent = sendToWorker(hostId, { type: "container.action", requestId, containerId, action });
+    if (!sent) {
+      clearTimeout(timer);
+      containerActionRequests.delete(requestId);
+      reject(new Error("Worker is not connected."));
+    }
+  });
+}
+
+export function resolveContainerAction(
+  requestId: string,
+  output: string | null,
+  error: string | null,
+  code: string | null,
+) {
+  const request = containerActionRequests.get(requestId);
+  if (!request) return;
+  clearTimeout(request.timer);
+  containerActionRequests.delete(requestId);
+  if (error) {
+    request.reject(new ApiError(
+      code === "unmanaged" ? 422 : 500,
+      code ?? "remote_container_failed",
+      error,
+    ));
+    return;
+  }
+  request.resolve(output ?? "");
+}
+
 export function requestWorkerUpdateCheck(
   hostId: string,
   stacks: { name: string; composeFile: string; projectName: string }[],
@@ -240,9 +323,37 @@ export function resolveMetadataWrite(requestId: string, error: string | null) {
   else request.resolve();
 }
 
+export function resolveComposeWrite(
+  requestId: string,
+  result: ComposeWriteResult | null,
+  error: string | null,
+  code: string | null,
+) {
+  const request = composeRequests.get(requestId);
+  if (!request) return;
+  clearTimeout(request.timer);
+  composeRequests.delete(requestId);
+  if (error || !result) {
+    request.reject(new ApiError(
+      code === "conflict" ? 409 : 500,
+      code ?? "remote_write_failed",
+      error ?? "Worker compose write failed.",
+    ));
+    return;
+  }
+  request.resolve(result);
+}
+
 export function updateRemoteStackMetadata(hostId: string, stackName: string, metadata: StackMetadata) {
   const stack = workers.get(hostId)?.stacks.find((entry) => entry.name === stackName);
   if (stack) stack.metadata = metadata;
+}
+
+export function updateRemoteStackFiles(hostId: string, stackName: string, result: ComposeWriteResult) {
+  const stack = workers.get(hostId)?.stacks.find((entry) => entry.name === stackName);
+  if (!stack) return;
+  if (result.compose !== undefined) stack.compose = result.compose;
+  if (result.env !== undefined) stack.env = result.env;
 }
 
 export function resolveLogResponse(requestId: string, text: string) {

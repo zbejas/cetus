@@ -57,14 +57,15 @@ An MCP key needs `mcp:read` or `mcp:write` plus the resource scope for each tool
 | `list_stacks`, `get_stack`, `get_stack_compose`, `list_services`, `get_stack_logs` | `stacks:read`, `logs:read` | Stack detail, compose, services, and logs |
 | `get_updates`, `check_updates` | `updates:read` | Cached and live registry checks |
 | `get_activity`, `list_operations` | `audit:read`, `stacks:read` | Audit and operation history |
-| `create_stack`, `edit_stack_compose` | `mcp:write`, `stacks:write` | Local stack files |
-| `delete_stack` | `mcp:write`, `stacks:delete` | Local stack to trash after confirmation |
+| `create_stack`, `edit_stack_compose` | `mcp:write`, `stacks:write` | Local or worker stack files |
+| `delete_stack` | `mcp:write`, `stacks:delete` | Stack to trash after confirmation |
 | `deploy_stack`, `stack_lifecycle`, `service_action` | `mcp:write`, `stacks:deploy` | Compose operations |
 | `stack_exec` | `mcp:write`, `containers:exec` | Non-interactive command in a local service container |
-| `container_action` | `mcp:write`, `containers:write` | Local container lifecycle |
-| `apply_update` | `mcp:write`, `updates:apply` | Health-gated auto-update |
+| `container_action` | `mcp:write`, `containers:write` | Start, stop, restart, pause, unpause, or remove a managed Compose container |
+| `apply_update` | `mcp:write`, `updates:apply` | Health-gated auto-update for one stack |
+| `apply_all_updates` | `mcp:write`, `updates:apply` | Update every visible stack with an available image update |
 
-MCP and REST mutations write an audit entry with the actor, target, action, and a short command or argument summary. Remote stack editing, remote delete, remote container actions, remote exec, and remote interactive terminals are not implemented; the API returns `501` and the UI disables the controls.
+MCP and REST mutations write an audit entry with the actor, target, action, and a short command or argument summary. Local and worker stacks support compose, env, and metadata edits, delete to trash, lifecycle actions, and managed container actions. Remote stack exec, remote snapshot restore, and remote interactive terminals are not implemented; the API returns `501` and the UI disables those controls. Standalone containers without a Compose project are read-only.
 
 ### Audit export
 
@@ -91,6 +92,8 @@ Errors use a JSON body with a stable code:
 - MCP tools are filtered in `tools/list` by the key's scopes. A tool that is missing from the list cannot be called.
 - The explorer can send destructive requests if the signed-in actor has the scopes. Treat it like the rest of the admin UI.
 - Remote workers remain the source of truth for their files. The manager may hold stale compose text until the next snapshot.
+- A worker stack edit goes over `compose.write` and returns the new hashes. A stale `baseHash` returns `409`, and the worker snapshot remains the authority for a later resync.
+- A worker delete runs `compose down` on the worker and moves the stack folder to the worker's `data/trash` directory. The manager removes the index row when the operation succeeds.
 
 ## Related docs
 

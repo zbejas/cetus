@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -22,11 +23,13 @@ const enrollToken = process.env.CETUS_ENROLL_TOKEN;
 const workerName = process.env.CETUS_WORKER_NAME ?? `worker-${crypto.randomUUID().slice(0, 6)}`;
 const stacksDir = path.resolve(process.env.CETUS_WORKER_STACKS_DIR ?? "/opt/stacks");
 const dataDir = path.resolve(process.env.CETUS_WORKER_DATA_DIR ?? "./data-worker");
+const trashDir = path.join(dataDir, "trash");
 const credentialFile = path.join(dataDir, "worker.json");
 const composeNames = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 
 fs.mkdirSync(stacksDir, { recursive: true });
 fs.mkdirSync(dataDir, { recursive: true });
+fs.mkdirSync(trashDir, { recursive: true });
 
 interface StoredCredential {
   hostId: string;
@@ -242,17 +245,52 @@ async function runCompose(projectName: string, stackName: string, operationId: s
   return proc.exited;
 }
 
+function snapshotStackFiles(stackName: string) {
+  const dir = path.join(stacksDir, stackName);
+  const composeFile = findCompose(dir);
+  if (!composeFile) return;
+  const snapshotDir = path.join(dir, ".cetus", "snapshots");
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  fs.copyFileSync(
+    path.join(dir, composeFile),
+    path.join(snapshotDir, `${stamp}-${composeFile}`),
+  );
+}
+
+function moveStackToTrash(stackName: string) {
+  const source = path.join(stacksDir, stackName);
+  const target = path.join(trashDir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${stackName}`);
+  try {
+    fs.renameSync(source, target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    fs.cpSync(source, target, { recursive: true, preserveTimestamps: true });
+    fs.rmSync(source, { recursive: true, force: true });
+  }
+  return target;
+}
+
 async function handleCommand(message: any) {
   const operationId = String(message.operationId);
   const stackName = String(message.stackName);
   const projectName = String(message.projectName ?? message.stackName);
   const appendLog = (text: string) => send({ type: "operation.output", operationId, text });
   try {
-    appendLog(`[cetus] $ docker compose -p ${projectName} ${message.args.join(" ")}\n`);
-    let exitCode = await runCompose(projectName, stackName, operationId, (message.args ?? []).map(String));
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(stackName)) {
+      throw new Error("Stack name is not valid.");
+    }
+    const args = Array.isArray(message.args) ? message.args.map(String) : [];
+    if (message.action === "delete") snapshotStackFiles(stackName);
+    appendLog(`[cetus] $ docker compose -p ${projectName} ${args.join(" ")}\n`);
+    let exitCode = await runCompose(projectName, stackName, operationId, args);
     if (exitCode === 0 && Array.isArray(message.argsAfter) && message.argsAfter.length > 0) {
       appendLog(`[cetus] $ docker compose -p ${projectName} ${message.argsAfter.join(" ")}\n`);
       exitCode = await runCompose(projectName, stackName, operationId, message.argsAfter.map(String));
+    }
+    if (exitCode === 0 && message.action === "delete") {
+      const target = moveStackToTrash(stackName);
+      appendLog(`\n[cetus] Moved stack to ${target}\n`);
     }
     send({
       type: "operation.finished",
@@ -265,6 +303,140 @@ async function handleCommand(message: any) {
   } catch (error) {
     appendLog(`[cetus] ${error instanceof Error ? error.message : String(error)}\n`);
     send({ type: "operation.finished", operationId, status: "failed", exitCode: 1 });
+  }
+}
+
+async function handleContainerAction(message: any) {
+  const requestId = String(message.requestId);
+  const containerId = String(message.containerId ?? "");
+  const action = String(message.action ?? "");
+  const allowed = new Set(["start", "stop", "restart", "pause", "unpause", "remove"]);
+  try {
+    if (!containerId || !allowed.has(action)) {
+      throw new Error("Unsupported container action.");
+    }
+    const inspect = await docker([
+      "inspect",
+      "--format",
+      "{{json .Config.Labels}}",
+      containerId,
+    ], { timeoutMs: 15_000 });
+    if (inspect.exitCode !== 0) throw new Error(inspect.stderr || "Container was not found.");
+    let labels: Record<string, string> = {};
+    try {
+      labels = JSON.parse(inspect.stdout.trim() || "{}");
+    } catch {
+      labels = {};
+    }
+    if (!labels["com.docker.compose.project"]) {
+      send({
+        type: "container.actioned",
+        requestId,
+        error: "Standalone containers outside Compose stacks are read-only.",
+        code: "unmanaged",
+      });
+      return;
+    }
+    const result = await docker(action === "remove" ? ["rm", "-f", containerId] : [action, containerId], {
+      timeoutMs: 45_000,
+    });
+    if (result.exitCode !== 0) throw new Error(result.stderr || "Docker action failed.");
+    await sendSnapshot();
+    send({
+      type: "container.actioned",
+      requestId,
+      output: `${result.stdout}${result.stderr}`,
+    });
+  } catch (error) {
+    send({
+      type: "container.actioned",
+      requestId,
+      error: error instanceof Error ? error.message : "Container action failed.",
+      code: "action_failed",
+    });
+  }
+}
+
+function hashText(text: string) {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+function atomicWrite(file: string, content: string) {
+  const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(temp, content);
+  fs.renameSync(temp, file);
+}
+
+function handleComposeWrite(message: any) {
+  const requestId = String(message.requestId);
+  try {
+    const stackName = String(message.stackName ?? "");
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(stackName)) {
+      throw new Error("Stack name is not valid.");
+    }
+    const dir = path.join(stacksDir, stackName);
+    if (!dir.startsWith(`${stacksDir}${path.sep}`)) {
+      throw new Error("Stack path is outside the stacks directory.");
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    const composeFile = findCompose(dir) ?? "compose.yaml";
+    const composePath = path.join(dir, composeFile);
+    const envPath = path.join(dir, ".env");
+    const currentCompose = fs.existsSync(composePath) ? fs.readFileSync(composePath, "utf8") : "";
+    const currentEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+
+    if (message.baseHash && hashText(currentCompose) !== String(message.baseHash)) {
+      send({
+        type: "compose.written",
+        requestId,
+        error: "The compose file changed on disk. Review the difference and save again.",
+        code: "conflict",
+      });
+      return;
+    }
+
+    const nextCompose = message.compose !== undefined ? String(message.compose) : currentCompose;
+    const nextEnv = message.env !== undefined ? String(message.env) : currentEnv;
+
+    if (message.compose !== undefined) {
+      let parsed: any;
+      try {
+        parsed = YAML.parse(nextCompose);
+      } catch {
+        throw new Error("Compose is not valid YAML.");
+      }
+      if (!parsed || typeof parsed !== "object" || !parsed.services || typeof parsed.services !== "object") {
+        throw new Error("Compose must define services.");
+      }
+      const snapshotDir = path.join(dir, ".cetus", "snapshots");
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      if (fs.existsSync(composePath)) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        fs.writeFileSync(path.join(snapshotDir, `${stamp}-${composeFile}`), currentCompose);
+      }
+      atomicWrite(composePath, nextCompose);
+    }
+
+    if (message.env !== undefined) {
+      atomicWrite(envPath, nextEnv);
+    }
+
+    send({
+      type: "compose.written",
+      requestId,
+      compose: nextCompose,
+      env: nextEnv,
+      composeHash: hashText(nextCompose),
+      envHash: hashText(nextEnv),
+    });
+    void sendSnapshot();
+  } catch (error) {
+    send({
+      type: "compose.written",
+      requestId,
+      error: error instanceof Error ? error.message : "Compose write failed.",
+      code: "write_failed",
+    });
   }
 }
 
@@ -456,6 +628,14 @@ function connect() {
     }
     if (message.type === "auto-update") {
       void handleAutoUpdateCommand(message);
+      return;
+    }
+    if (message.type === "compose.write") {
+      handleComposeWrite(message);
+      return;
+    }
+    if (message.type === "container.action") {
+      void handleContainerAction(message);
       return;
     }
     if (message.type === "metadata.write") {

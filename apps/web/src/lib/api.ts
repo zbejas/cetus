@@ -2,7 +2,9 @@ import type {
   ApiKeyCreated,
   ApiKeySummary,
   AuditEntry,
+  AutoUpdateConfig,
   BackupSummary,
+  BulkUpdateResult,
   DashboardData,
   FleetUpdateCheckSummary,
   HostInventory,
@@ -145,6 +147,7 @@ export interface SettingsResponse {
   dbPath: string;
   trustProxy: boolean;
   allowedOrigins: string[];
+  autoUpdate: AutoUpdateConfig;
   oidc: OidcSettings;
   smtp: SmtpSettings;
   stacksDirLocked: boolean;
@@ -163,6 +166,7 @@ export interface SettingsPatch {
   stacksDir?: string;
   allowedOrigins?: string[];
   trustProxy?: boolean;
+  autoUpdate?: Partial<AutoUpdateConfig>;
   oidc?: OidcPatch;
   smtp?: SmtpPatch;
 }
@@ -282,6 +286,8 @@ export const api = {
     request<UpdateCheckResult>(`/api/stacks/${id}/updates/check`, { method: "POST", body: JSON.stringify({}) }),
   checkAllUpdates: () =>
     request<FleetUpdateCheckSummary>("/api/updates/check", { method: "POST", body: JSON.stringify({}) }),
+  applyAllUpdates: () =>
+    request<BulkUpdateResult>("/api/updates/apply", { method: "POST", body: JSON.stringify({}) }),
   validateStack: (id: string, compose: string) =>
     request<{ ok: boolean; errors: string[] }>(`/api/stacks/${id}/validate`, { method: "POST", body: JSON.stringify({ compose }) }),
   stackAction: (id: string, action: string, body: { profiles?: string[]; confirmName?: string } = {}) =>

@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import type { Role } from "@shared/types.ts";
+import type { AutoUpdateConfig, Role } from "@shared/types.ts";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { bootstrap, config, refreshTrustedOrigins } from "../config.ts";
 import { sealSecret } from "./secrets.ts";
+import { readGlobalAutoUpdate, writeGlobalAutoUpdate } from "./globalAutoUpdate.ts";
 
 const USER_ROLES: Role[] = ["admin", "operator", "viewer"];
 
@@ -37,6 +38,7 @@ export interface SettingsPatch {
   stacksDir?: string;
   allowedOrigins?: string[];
   trustProxy?: boolean;
+  autoUpdate?: Partial<AutoUpdateConfig>;
   oidc?: OidcPatch;
   smtp?: SmtpPatch;
 }
@@ -128,6 +130,7 @@ export function getSettingsView() {
     dbPath: config.dbPath,
     trustProxy: config.trustProxy,
     allowedOrigins: config.allowedOrigins,
+    autoUpdate: readGlobalAutoUpdate(),
     oidc: oidcView(),
     smtp: smtpView(),
     stacksDirLocked: config.dockerDetected && !config.allowStacksDirChange,
@@ -178,6 +181,11 @@ export function updateSettings(patch: SettingsPatch) {
     if (patch.trustProxy !== config.trustProxy) changed.push("trustProxy");
     config.trustProxy = patch.trustProxy;
     writeSetting("trustProxy", String(patch.trustProxy));
+  }
+
+  if (patch.autoUpdate) {
+    writeGlobalAutoUpdate({ ...readGlobalAutoUpdate(), ...patch.autoUpdate });
+    changed.push("autoUpdate");
   }
 
   if (patch.oidc) {

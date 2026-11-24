@@ -5,6 +5,7 @@ import { loadComposeServices } from "./composeConfig.ts";
 
 export interface AutoUpdateRunConfig {
   services?: string[];
+  excludeServices?: string[];
   healthCheck?: boolean;
   rollback?: boolean;
   healthGraceSeconds?: number;
@@ -57,10 +58,11 @@ export async function runAutoUpdate(
   const previousCompose = fs.readFileSync(composePath, "utf8");
   snapshotCompose(target, previousCompose);
   const services = await loadComposeServices(target.dir, target.projectName, target.composeFile);
+  const excluded = new Set(config.excludeServices ?? []);
   const selected = (config.services?.length
     ? config.services.filter((name) => services[name])
     : Object.keys(services)
-  ).filter((name) => !services[name]?.build);
+  ).filter((name) => !services[name]?.build && !excluded.has(name));
   if (!selected.length) {
     emit("[cetus] No pullable services selected for auto-update. Locally built images need an external build step.\n");
     return { status: "failed", message: "No pullable services selected." };

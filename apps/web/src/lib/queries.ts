@@ -322,6 +322,30 @@ export function useCheckAllUpdates() {
   });
 }
 
+export function useApplyAllUpdates() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.applyAllUpdates,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: queryKeys.dashboard });
+      client.invalidateQueries({ queryKey: ["stacks"] });
+      client.invalidateQueries({ queryKey: queryKeys.operations });
+    },
+  });
+}
+
+export function useUpdateSettings() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.updateSettings,
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: queryKeys.settings });
+      client.invalidateQueries({ queryKey: queryKeys.dashboard });
+      client.invalidateQueries({ queryKey: ["stacks"] });
+    },
+  });
+}
+
 export function useRestoreSnapshot(id: string) {
   const client = useQueryClient();
   return useMutation({
