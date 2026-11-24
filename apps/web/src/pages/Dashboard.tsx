@@ -324,36 +324,32 @@ export function DashboardPage() {
         />
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-3">
-        <div className="grid gap-3 content-start xl:col-span-2">
-          <FleetHealthPanel hosts={hosts} />
-          <RecentStacksPanel stacks={data.recentStacks} onCreate={openNewStack} canWrite={canWrite} />
-          <QuickActionsPanel
-            onNewStack={openNewStack}
-            onScan={scanFolder}
-            scanning={canWrite && scan.isPending}
-            canWrite={canWrite}
-            onOpenHost={openFirstHost}
-            onOpenLogs={() => navigate({ to: "/logs" })}
-            onOpenActivity={() => navigate({ to: "/activity" })}
-          />
-        </div>
-        <div className="grid gap-3 content-start">
-          <UpdateQueuePanel
-            updates={data.updates}
-            checkedAt={data.updatesCheckedAt ?? null}
-            failed={data.updatesFailed ?? 0}
-            checking={updateCheck.isPending}
-            onCheck={() => void checkForUpdates()}
-            globalAutoUpdate={data.globalAutoUpdate}
-            canApply={canApply}
-            canConfigure={canConfigure}
-            updating={applyAll.isPending}
-            onUpdateAll={() => void updateAll()}
-            onConfigureSchedule={() => setScheduleOpen(true)}
-          />
-          <ActivityPanel activity={data.activity} />
-        </div>
+      <div className="dashboard-flow">
+        <FleetHealthPanel hosts={hosts} />
+        <RecentStacksPanel stacks={data.recentStacks} onCreate={openNewStack} canWrite={canWrite} />
+        <QuickActionsPanel
+          onNewStack={openNewStack}
+          onScan={scanFolder}
+          scanning={canWrite && scan.isPending}
+          canWrite={canWrite}
+          onOpenHost={openFirstHost}
+          onOpenLogs={() => navigate({ to: "/logs" })}
+          onOpenActivity={() => navigate({ to: "/activity" })}
+        />
+        <UpdateQueuePanel
+          updates={data.updates}
+          checkedAt={data.updatesCheckedAt ?? null}
+          failed={data.updatesFailed ?? 0}
+          checking={updateCheck.isPending}
+          onCheck={() => void checkForUpdates()}
+          globalAutoUpdate={data.globalAutoUpdate}
+          canApply={canApply}
+          canConfigure={canConfigure}
+          updating={applyAll.isPending}
+          onUpdateAll={() => void updateAll()}
+          onConfigureSchedule={() => setScheduleOpen(true)}
+        />
+        <ActivityPanel activity={data.activity} />
       </div>
       <GlobalAutoUpdateDialog
         open={scheduleOpen}
