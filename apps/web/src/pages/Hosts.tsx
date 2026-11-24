@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Boxes, ChevronRight, Container, Cpu, HardDrive, Images, Layers, Plus, Server } from "lucide-react";
+import { Boxes, ChevronRight, Container, Cpu, HardDrive, Images, Layers, Plus, RefreshCw, Server } from "lucide-react";
 import type { HostSummary } from "@shared/types";
 import { ApiError, can, scopeReason } from "../lib/api";
-import { useHosts, useMe, useUpdateWorker } from "../lib/queries";
+import { useHosts, useMe, useUpdateAllWorkers, useUpdateWorker } from "../lib/queries";
 import { Badge, Button, Dialog, EmptyState, PageHeader, Skeleton } from "../components/ui";
 import { StatusDot } from "../components/Status";
 import { useToast } from "../components/Toast";
@@ -13,11 +13,25 @@ export function HostsPage() {
   const hosts = useHosts();
   const me = useMe();
   const updateWorker = useUpdateWorker();
+  const updateAllWorkers = useUpdateAllWorkers();
   const toast = useToast();
   const list = hosts.data ?? [];
   const online = list.filter((host) => host.status === "online").length;
   const canUpdate = can(me.data?.actor.scopes, "updates:apply");
   const [updateTarget, setUpdateTarget] = useState<HostSummary | null>(null);
+  const [updateAllOpen, setUpdateAllOpen] = useState(false);
+  const updateableWorkers = list.filter((host) =>
+    host.kind === "worker"
+    && host.workerUpdateAvailable
+    && host.workerUpdateSupported
+    && host.status === "online"
+  );
+  const blockedWorkers = list.filter((host) =>
+    host.kind === "worker"
+    && (host.workerUpdateAvailable || !host.cetusVersion)
+    && !(host.workerUpdateAvailable && host.workerUpdateSupported && host.status === "online")
+  );
+  const managerVersion = list.find((host) => host.kind === "local")?.cetusVersion ?? null;
 
   async function confirmWorkerUpdate() {
     if (!updateTarget) return;
@@ -30,15 +44,54 @@ export function HostsPage() {
     }
   }
 
+  async function confirmWorkerUpdates() {
+    try {
+      const result = await updateAllWorkers.mutateAsync();
+      setUpdateAllOpen(false);
+      if (result.started.length > 0) {
+        toast.success(
+          result.started.length === 1 ? "Worker update started" : `${result.started.length} worker updates started`,
+          result.skipped.length > 0
+            ? `${result.skipped.length} skipped. ${result.skipped[0]?.reason ?? ""}`
+            : "Each worker reconnects when its new container is healthy.",
+        );
+      } else {
+        toast.push({
+          title: "No worker updates started",
+          description: result.skipped[0]?.reason ?? "No online worker was eligible.",
+          tone: "info",
+        });
+      }
+    } catch (error) {
+      toast.error("Worker updates failed", errorMessage(error, "The worker updates could not be started."));
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Hosts"
         description={list.length ? `${list.length} hosts · ${online} online` : "Docker engines managed by this Cetus instance."}
         actions={
-          <Link to="/hosts/enroll" className="btn">
-            <Plus size={14} /> Add worker
-          </Link>
+          <>
+            <Button
+              variant="primary"
+              onClick={() => setUpdateAllOpen(true)}
+              disabled={!canUpdate || updateableWorkers.length === 0 || updateAllWorkers.isPending}
+              title={
+                !canUpdate
+                  ? scopeReason("updates:apply")
+                  : updateableWorkers.length === 0
+                    ? "No online worker can update from the panel."
+                    : `Update ${updateableWorkers.length} worker${updateableWorkers.length === 1 ? "" : "s"}`
+              }
+            >
+              <RefreshCw size={14} /> Update all
+            </Button>
+            <Link to="/hosts/enroll" className="btn">
+              <Plus size={14} /> Add worker
+            </Link>
+          </>
         }
       />
 
@@ -185,6 +238,43 @@ export function HostsPage() {
           <span>Worker version: <span className="mono">{updateTarget?.cetusVersion ?? "not reported"}</span></span>
           <span className="muted">The manager and worker images should match after the update.</span>
         </div>
+      </Dialog>
+
+      <Dialog
+        open={updateAllOpen}
+        onClose={() => {
+          if (!updateAllWorkers.isPending) setUpdateAllOpen(false);
+        }}
+        title={updateableWorkers.length === 1 ? "Update 1 worker" : `Update ${updateableWorkers.length} workers`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setUpdateAllOpen(false)} disabled={updateAllWorkers.isPending}>Cancel</Button>
+            <Button variant="primary" onClick={() => void confirmWorkerUpdates()} loading={updateAllWorkers.isPending}>
+              <RefreshCw size={14} /> Update all
+            </Button>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0, color: "var(--text-soft)" }}>
+          This pulls the current Cetus image on each worker and recreates its container. Every worker reconnects when its
+          new container is healthy.
+        </p>
+        <div className="surface-soft" style={{ display: "grid", gap: 6, padding: "10px 12px", fontSize: 12, maxHeight: 240, overflowY: "auto" }}>
+          {updateableWorkers.map((worker) => (
+            <div key={worker.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span>{worker.name}</span>
+              <span className="mono muted" style={{ fontSize: 11 }}>
+                {worker.cetusVersion ?? "unknown"} → {managerVersion ?? "manager"}
+              </span>
+            </div>
+          ))}
+        </div>
+        {blockedWorkers.length > 0 ? (
+          <p className="help" style={{ marginTop: 10 }}>
+            {blockedWorkers.length} worker{blockedWorkers.length === 1 ? "" : "s"} need a manual update or are offline
+            and will be skipped.
+          </p>
+        ) : null}
       </Dialog>
     </div>
   );

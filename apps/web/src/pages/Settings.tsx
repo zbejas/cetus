@@ -102,20 +102,53 @@ import { scheduleLabel } from "../lib/autoUpdate";
 type SettingsTab = "general" | "appearance" | "updates" | "registries" | "authentication" | "mail" | "access" | "notifications" | "keys" | "mcp" | "audit" | "backup";
 type BadgeTone = "default" | "accent" | "success" | "warn" | "danger" | "info";
 
-const TABS: { id: SettingsTab; label: string; icon: typeof Server; scope?: string }[] = [
-  { id: "general", label: "General", icon: Server, scope: "settings:read" },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "updates", label: "Updates", icon: CalendarClock, scope: "settings:read" },
-  { id: "registries", label: "Registries", icon: LockKeyhole, scope: "settings:read" },
-  { id: "authentication", label: "Authentication", icon: Fingerprint, scope: "settings:read" },
-  { id: "mail", label: "Mail", icon: Mail, scope: "settings:read" },
-  { id: "access", label: "Access", icon: Users, scope: "users:read" },
-  { id: "notifications", label: "Notifications", icon: Bell, scope: "notifications:read" },
-  { id: "keys", label: "API keys", icon: KeyRound, scope: "keys:read" },
-  { id: "mcp", label: "MCP", icon: Terminal, scope: "keys:read" },
-  { id: "audit", label: "Audit", icon: ScrollText, scope: "audit:read" },
-  { id: "backup", label: "Backup", icon: Archive, scope: "backup:read" },
+type SettingsNavItem = { id: SettingsTab; label: string; icon: typeof Server; scope?: string };
+
+const SETTINGS_GROUPS: { id: string; label: string; items: SettingsNavItem[] }[] = [
+  {
+    id: "instance",
+    label: "Instance",
+    items: [
+      { id: "general", label: "General", icon: Server, scope: "settings:read" },
+      { id: "appearance", label: "Appearance", icon: Palette },
+    ],
+  },
+  {
+    id: "access",
+    label: "Access",
+    items: [
+      { id: "authentication", label: "Authentication", icon: Fingerprint, scope: "settings:read" },
+      { id: "access", label: "Users & invites", icon: Users, scope: "users:read" },
+      { id: "keys", label: "API keys", icon: KeyRound, scope: "keys:read" },
+      { id: "mcp", label: "MCP", icon: Terminal, scope: "keys:read" },
+    ],
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    items: [
+      { id: "registries", label: "Registries", icon: LockKeyhole, scope: "settings:read" },
+      { id: "mail", label: "Mail", icon: Mail, scope: "settings:read" },
+      { id: "notifications", label: "Notifications", icon: Bell, scope: "notifications:read" },
+    ],
+  },
+  {
+    id: "operations",
+    label: "Operations",
+    items: [
+      { id: "updates", label: "Updates", icon: CalendarClock, scope: "settings:read" },
+      { id: "backup", label: "Backups", icon: Archive, scope: "backup:read" },
+      { id: "audit", label: "Audit", icon: ScrollText, scope: "audit:read" },
+    ],
+  },
 ];
+
+const TABS = SETTINGS_GROUPS.flatMap((group) => group.items);
+
+function tabFromLocation(): SettingsTab {
+  const value = new URLSearchParams(window.location.search).get("tab");
+  return TABS.some((entry) => entry.id === value) ? value as SettingsTab : "general";
+}
 
 const EMPTY_SCOPES: readonly string[] = [];
 
@@ -225,14 +258,20 @@ const MCP_TOOLS: { name: string; mode: "read" | "write"; scopes: string; descrip
 
 export function SettingsPage() {
   const me = useMe();
-  const [tab, setTab] = useState<SettingsTab>("general");
+  const [tab, setTab] = useState<SettingsTab>(tabFromLocation);
   const [createOpen, setCreateOpen] = useState(false);
   const [initialScopes, setInitialScopes] = useState<readonly string[]>(EMPTY_SCOPES);
   const scopes = me.data?.actor.scopes;
-  const visibleTabs = useMemo(
-    () => TABS.filter((entry) => !entry.scope || can(scopes, entry.scope)),
+  const visibleGroups = useMemo(
+    () => SETTINGS_GROUPS
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((entry) => !entry.scope || can(scopes, entry.scope)),
+      }))
+      .filter((group) => group.items.length > 0),
     [scopes],
   );
+  const visibleTabs = useMemo(() => visibleGroups.flatMap((group) => group.items), [visibleGroups]);
 
   useEffect(() => {
     if (me.isLoading) return;
@@ -241,6 +280,13 @@ export function SettingsPage() {
     }
   }, [me.isLoading, tab, visibleTabs]);
 
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (tab === "general") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", tab);
+    window.history.replaceState(window.history.state, "", url);
+  }, [tab]);
+
   function openCreate(scopes: readonly string[] = EMPTY_SCOPES) {
     setInitialScopes(scopes);
     setCreateOpen(true);
@@ -248,53 +294,72 @@ export function SettingsPage() {
 
   return (
     <div>
-      <PageHeader title="Settings" description="Appearance, updates, registries, authentication, mail, access, keys, notifications, and backups." />
+      <PageHeader title="Settings" description="Instance configuration, access, integrations, and maintenance." />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
-        <div
-          className="tabs"
-          role="tablist"
-          aria-label="Settings sections"
-          style={{ flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+      <label className="settings-mobile-select">
+        <span className="label">Settings section</span>
+        <select
+          className="select"
+          value={tab}
+          onChange={(event) => setTab(event.target.value as SettingsTab)}
         >
-          {visibleTabs.map((entry) => {
-            const Icon = entry.icon;
-            return (
-              <button
-                key={entry.id}
-                className="tab"
-                role="tab"
-                id={`settings-tab-${entry.id}`}
-                aria-selected={tab === entry.id}
-                aria-controls={`settings-panel-${entry.id}`}
-                data-active={tab === entry.id}
-                onClick={() => setTab(entry.id)}
-              >
-                <Icon size={13} />
-                {entry.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+          {visibleGroups.map((group) => (
+            <optgroup key={group.id} label={group.label}>
+              {group.items.map((entry) => (
+                <option key={entry.id} value={entry.id}>{entry.label}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </label>
 
-      <div
-        role="tabpanel"
-        id={`settings-panel-${tab}`}
-        aria-labelledby={`settings-tab-${tab}`}
-      >
-        {tab === "general" ? <GeneralTab /> : null}
-        {tab === "appearance" ? <AppearanceTab /> : null}
-        {tab === "updates" ? <UpdatesTab /> : null}
-        {tab === "registries" ? <RegistriesTab /> : null}
-        {tab === "authentication" ? <AuthenticationTab /> : null}
-        {tab === "mail" ? <MailTab /> : null}
-        {tab === "access" ? <AccessTab /> : null}
-        {tab === "notifications" ? <NotificationsTab /> : null}
-        {tab === "keys" ? <KeysTab onCreate={() => openCreate()} /> : null}
-        {tab === "mcp" ? <McpTab onCreate={() => openCreate(MCP_RW_SCOPES)} /> : null}
-        {tab === "audit" ? <AuditTab /> : null}
-        {tab === "backup" ? <BackupTab /> : null}
+      <div className="settings-shell">
+        <nav className="settings-nav" aria-label="Settings sections">
+          {visibleGroups.map((group) => (
+            <div
+              className="settings-nav-group"
+              role="group"
+              aria-labelledby={`settings-group-${group.id}`}
+              key={group.id}
+            >
+              <div className="settings-nav-label" id={`settings-group-${group.id}`}>{group.label}</div>
+              <div className="settings-nav-items">
+                {group.items.map((entry) => {
+                  const Icon = entry.icon;
+                  const active = tab === entry.id;
+                  return (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className="settings-nav-item"
+                      data-active={active}
+                      aria-current={active ? "page" : undefined}
+                      onClick={() => setTab(entry.id)}
+                    >
+                      <Icon size={14} />
+                      <span>{entry.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        <div className="settings-content">
+          {tab === "general" ? <GeneralTab /> : null}
+          {tab === "appearance" ? <AppearanceTab /> : null}
+          {tab === "updates" ? <UpdatesTab /> : null}
+          {tab === "registries" ? <RegistriesTab /> : null}
+          {tab === "authentication" ? <AuthenticationTab /> : null}
+          {tab === "mail" ? <MailTab /> : null}
+          {tab === "access" ? <AccessTab /> : null}
+          {tab === "notifications" ? <NotificationsTab /> : null}
+          {tab === "keys" ? <KeysTab onCreate={() => openCreate()} /> : null}
+          {tab === "mcp" ? <McpTab onCreate={() => openCreate(MCP_RW_SCOPES)} /> : null}
+          {tab === "audit" ? <AuditTab /> : null}
+          {tab === "backup" ? <BackupTab /> : null}
+        </div>
       </div>
 
       <CreateKeyFlow

@@ -671,7 +671,19 @@ function OverviewTab({
                     <tr key={container.id}>
                       <td data-label="Name">
                         <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
-                          <strong style={{ fontWeight: 600 }}>{container.names}</strong>
+                          {container.stackId ? (
+                            <Link
+                              to="/stacks/$stackId"
+                              params={{ stackId: container.stackId }}
+                              className="container-stack-link"
+                              style={{ fontWeight: 600 }}
+                              title={`Open ${container.project ?? "stack"}`}
+                            >
+                              {container.names}
+                            </Link>
+                          ) : (
+                            <strong style={{ fontWeight: 600 }}>{container.names}</strong>
+                          )}
                           <span className="mono muted" style={{ fontSize: 10.5 }}>{shortId(container.id, 12)}</span>
                         </div>
                       </td>
@@ -680,7 +692,19 @@ function OverviewTab({
                       </td>
                       <td data-label="Compose">
                         {container.project ? (
-                          <span className="mono" style={{ fontSize: 11.5 }}>{container.project}/{container.service ?? "service"}</span>
+                          container.stackId ? (
+                            <Link
+                              to="/stacks/$stackId"
+                              params={{ stackId: container.stackId }}
+                              className="mono container-stack-link"
+                              style={{ fontSize: 11.5 }}
+                              title={`Open ${container.project}`}
+                            >
+                              {container.project}/{container.service ?? "service"}
+                            </Link>
+                          ) : (
+                            <span className="mono" style={{ fontSize: 11.5 }}>{container.project}/{container.service ?? "service"}</span>
+                          )
                         ) : (
                           <span className="badge badge-warn" style={{ minHeight: 18, fontSize: 9.5 }}>unmanaged</span>
                         )}
@@ -826,11 +850,24 @@ function ContainersTab({
                 const rowBusy = busy?.startsWith(actionPrefix) ?? false;
                 const actionReason = container.unmanaged ? "Standalone containers are read-only" : writeReason;
                 const actionsDisabled = busy !== null || !canWrite || container.unmanaged;
+                const stackId = container.stackId ?? null;
                 return (
                   <tr key={container.id}>
                     <td data-label="Container">
                       <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flexWrap: "wrap" }}>
-                        <strong style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{container.names}</strong>
+                        {stackId ? (
+                          <Link
+                            to="/stacks/$stackId"
+                            params={{ stackId }}
+                            className="container-stack-link"
+                            style={{ fontWeight: 600, overflowWrap: "anywhere" }}
+                            title={`Open ${container.project ?? "stack"}`}
+                          >
+                            {container.names}
+                          </Link>
+                        ) : (
+                          <strong style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{container.names}</strong>
+                        )}
                         {container.unmanaged ? (
                           <span
                             className="badge badge-warn"
@@ -854,7 +891,19 @@ function ContainersTab({
                         <span className="muted" style={{ fontSize: 11 }}>Not Compose managed</span>
                       ) : (
                         <div style={{ display: "grid", gap: 2, whiteSpace: "nowrap" }}>
-                          <span className="mono" style={{ fontSize: 11.5 }}>{container.project}</span>
+                          {stackId ? (
+                            <Link
+                              to="/stacks/$stackId"
+                              params={{ stackId }}
+                              className="mono container-stack-link"
+                              style={{ fontSize: 11.5 }}
+                              title={`Open ${container.project ?? "stack"}`}
+                            >
+                              {container.project}
+                            </Link>
+                          ) : (
+                            <span className="mono" style={{ fontSize: 11.5 }}>{container.project}</span>
+                          )}
                           <span className="muted" style={{ fontSize: 10.5 }}>{container.service ?? "service"}</span>
                         </div>
                       )}

@@ -306,6 +306,11 @@ export interface UpdateQueueView {
   pausedUntil: string | null;
 }
 
+export interface WorkerUpdateBulkResult {
+  started: { hostId: string; hostName: string; operationId: string }[];
+  skipped: { hostId: string; hostName: string; reason: string }[];
+}
+
 export interface RegistryCredentialHost {
   id: string;
   name: string;
@@ -362,6 +367,7 @@ export interface DockerContainer {
   labels: Record<string, string>;
   project: string | null;
   service: string | null;
+  stackId?: string | null;
   unmanaged: boolean;
 }
 

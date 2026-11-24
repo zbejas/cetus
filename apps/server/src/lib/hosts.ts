@@ -11,7 +11,7 @@ import {
   listNetworks,
   listVolumes,
 } from "./docker.ts";
-import type { HostInventory, HostSummary } from "@shared/types.ts";
+import type { DockerContainer, HostInventory, HostSummary } from "@shared/types.ts";
 import { config } from "../config.ts";
 import { getRemoteHost, getRemoteInventory } from "./remote.ts";
 
@@ -207,6 +207,22 @@ export async function getHostSummary(id: string): Promise<HostSummary | null> {
   });
 }
 
+function stackIdByProject(hostId: string) {
+  const rows = db.select({ id: schema.stack.id, projectName: schema.stack.projectName })
+    .from(schema.stack)
+    .where(eq(schema.stack.hostId, hostId))
+    .all();
+  return new Map(rows.map((row) => [row.projectName, row.id]));
+}
+
+function withStackIds(containers: DockerContainer[], hostId: string) {
+  const stacks = stackIdByProject(hostId);
+  return containers.map((container) => ({
+    ...container,
+    stackId: container.project ? stacks.get(container.project) ?? null : null,
+  }));
+}
+
 export async function getHostInventory(id: string): Promise<HostInventory | null> {
   const row = getHostRow(id);
   if (!row) return null;
@@ -214,16 +230,20 @@ export async function getHostInventory(id: string): Promise<HostInventory | null
   if (!summary) return null;
 
   if (row.kind !== "local") {
-    return getRemoteInventory(row.id) ?? {
-      host: summary,
-      info: null,
-      containers: [],
-      images: [],
-      volumes: [],
-      networks: [],
-      df: [],
-      disk: null,
-    };
+    const remote = getRemoteInventory(row.id);
+    if (!remote) {
+      return {
+        host: summary,
+        info: null,
+        containers: [],
+        images: [],
+        volumes: [],
+        networks: [],
+        df: [],
+        disk: null,
+      };
+    }
+    return { ...remote, containers: withStackIds(remote.containers, row.id) };
   }
 
   const [info, containers, images, volumes, networks, df, disk] = await Promise.all([
@@ -236,5 +256,5 @@ export async function getHostInventory(id: string): Promise<HostInventory | null
     getDiskUsage(),
   ]);
 
-  return { host: summary, info, containers, images, volumes, networks, df, disk };
+  return { host: summary, info, containers: withStackIds(containers, row.id), images, volumes, networks, df, disk };
 }

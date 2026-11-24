@@ -1,6 +1,6 @@
 # Settings and configuration
 
-Cetus keeps the process environment small. Runtime settings live in SQLite and are edited at `/settings` by an admin with `settings:write`.
+Cetus keeps the process environment small. Runtime settings live in SQLite and are edited at `/settings` by an admin with `settings:write`. The page groups controls under Instance, Access, Integrations, and Operations; the URL carries the active section as `?tab=<id>`.
 
 ## Bootstrap environment
 

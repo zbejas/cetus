@@ -40,8 +40,7 @@ test("stack detail dark desktop", async ({ page }) => {
 });
 
 test("settings appearance dark desktop", async ({ page }) => {
-  await page.goto("/settings");
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.goto("/settings?tab=appearance");
   await expect(page.getByRole("heading", { name: "Settings" }).first()).toBeVisible();
   await page.waitForTimeout(400);
   await expect(page).toHaveScreenshot("settings-dark-1440.png");
@@ -64,8 +63,7 @@ test("stacks mobile", async ({ page }) => {
 
 test("settings mobile", async ({ page }) => {
   await page.setViewportSize(MOBILE);
-  await page.goto("/settings");
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.goto("/settings?tab=appearance");
   await page.waitForTimeout(400);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(1);
@@ -77,8 +75,7 @@ test("key screens have no serious accessibility violations", async ({ page }) =>
   const stacks = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(stacks.violations, stacks.violations.map((violation) => `${violation.id}: ${violation.help}`).join("\n")).toEqual([]);
 
-  await page.goto("/settings");
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.goto("/settings?tab=appearance");
   const settings = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(settings.violations, settings.violations.map((violation) => `${violation.id}: ${violation.help}`).join("\n")).toEqual([]);
 });
