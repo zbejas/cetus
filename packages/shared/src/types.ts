@@ -50,6 +50,19 @@ export type StackStatus =
   | "unknown"
   | "updating";
 
+export interface AutoUpdateConfig {
+  enabled: boolean;
+  cron: string;
+  timezone: string;
+  services?: string[];
+  excludeServices?: string[];
+  healthCheck?: boolean;
+  rollback?: boolean;
+  healthGraceSeconds?: number;
+}
+
+export type AutoUpdateSource = "global" | "custom" | "off";
+
 export interface StackMetadata {
   displayName?: string;
   description?: string;
@@ -57,15 +70,7 @@ export interface StackMetadata {
   icon?: string;
   urls?: { label: string; url: string }[];
   projectName?: string;
-  autoUpdate?: {
-    enabled: boolean;
-    cron: string;
-    timezone: string;
-    services?: string[];
-    healthCheck?: boolean;
-    rollback?: boolean;
-    healthGraceSeconds?: number;
-  };
+  autoUpdate?: AutoUpdateConfig;
 }
 
 export interface StackSummary {
@@ -162,6 +167,9 @@ export interface StackDetail extends StackSummary {
   host: HostSummary;
   autoUpdateState?: AutoUpdateState;
   updateCheck?: UpdateCheckResult | null;
+  globalAutoUpdate?: AutoUpdateConfig;
+  effectiveAutoUpdate?: AutoUpdateConfig | null;
+  autoUpdateSource?: AutoUpdateSource;
 }
 
 export type OperationType =
@@ -259,6 +267,12 @@ export interface DashboardData {
   }[];
   updatesCheckedAt?: string | null;
   updatesFailed?: number;
+  globalAutoUpdate: AutoUpdateConfig;
+}
+
+export interface BulkUpdateResult {
+  started: { stackId: string; stackName: string; operationId: string }[];
+  skipped: { stackId: string; stackName: string; reason: string }[];
 }
 
 export interface DockerInfo {

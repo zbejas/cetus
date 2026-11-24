@@ -2879,7 +2879,7 @@ a {
 
 .auto-update-state {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -2899,13 +2899,13 @@ a {
   color: var(--accent);
 }
 
-.auto-update-state strong {
+.auto-update-state > div > strong {
   display: block;
   font-size: 12px;
   font-weight: 650;
 }
 
-.auto-update-state span {
+.auto-update-state > div > span {
   display: block;
   margin-top: 2px;
   color: var(--muted);

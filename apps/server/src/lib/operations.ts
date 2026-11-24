@@ -5,13 +5,24 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { config } from "../config.ts";
-import type { Actor, Operation, OperationType } from "@shared/types.ts";
+import type { Actor, AutoUpdateConfig, Operation, OperationType } from "@shared/types.ts";
 import { recordAudit } from "./security.ts";
 import { getHostRow } from "./hosts.ts";
 import { sendToWorker } from "./remote.ts";
-import { getStackDetail, getStackRow, invalidateStackCache, moveToTrash, readMetadata, snapshotCurrent } from "./stacks.ts";
+import {
+  clearRemoteStackDeleting,
+  getStackDetail,
+  getStackRow,
+  invalidateStackCache,
+  markRemoteStackDeleting,
+  moveToTrash,
+  readMetadata,
+  snapshotCurrent,
+} from "./stacks.ts";
 import { runAutoUpdate } from "./autoUpdateRunner.ts";
 import { recordAutoUpdateRun, refreshAutoUpdateNext } from "./autoUpdateState.ts";
+import { manualAutoUpdateConfig, resolveAutoUpdate } from "./autoUpdateConfig.ts";
+import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
 import { markAutoUpdateApplied } from "./updateCheckState.ts";
 import { notifyEvent } from "./notifications.ts";
 
@@ -240,12 +251,23 @@ export const AUTO_UPDATE_ACTOR: Actor = {
   scopes: ["*"],
 };
 
-export function startAutoUpdateOperation(stackId: string, actor: Actor, request?: Request): Operation {
+export interface AutoUpdateRunOptions {
+  config?: AutoUpdateConfig;
+  trigger?: "schedule" | "manual" | "bulk";
+}
+
+export function startAutoUpdateOperation(
+  stackId: string,
+  actor: Actor,
+  request?: Request,
+  options: AutoUpdateRunOptions = {},
+): Operation {
   const stackRow = getStackRow(stackId);
   if (!stackRow) throw new Error("Stack not found");
   const metadata = readMetadata(stackRow);
-  const config = metadata.autoUpdate;
-  if (!config) throw new Error("Auto-update is not configured for this stack.");
+  const global = readGlobalAutoUpdate();
+  const resolved = options.config ?? resolveAutoUpdate(metadata, global).config;
+  const config = resolved ?? manualAutoUpdateConfig(metadata, global);
   const running = db.select().from(schema.operation).where(and(
     eq(schema.operation.stackId, stackId),
     eq(schema.operation.status, "running"),
@@ -268,7 +290,12 @@ export function startAutoUpdateOperation(stackId: string, actor: Actor, request?
     resourceId: stackRow.id,
     hostId: stackRow.hostId,
     stackId: stackRow.id,
-    metadata: { operationId: operation.id, cron: config.cron, timezone: config.timezone },
+    metadata: {
+      operationId: operation.id,
+      cron: config.cron,
+      timezone: config.timezone,
+      trigger: options.trigger ?? "manual",
+    },
     request,
   });
 
@@ -302,6 +329,7 @@ export function startAutoUpdateOperation(stackId: string, actor: Actor, request?
         { dir: stackRow.dir, projectName: stackRow.projectName, composeFile: stackRow.composeFile },
         {
           services: config.services,
+          excludeServices: config.excludeServices,
           healthCheck: config.healthCheck,
           rollback: config.rollback,
           healthGraceSeconds: config.healthGraceSeconds,
@@ -310,10 +338,10 @@ export function startAutoUpdateOperation(stackId: string, actor: Actor, request?
       );
       finishOperation(operation.id, result.status === "success" ? "success" : "failed", result.status === "success" ? 0 : 1);
       recordAutoUpdateRun(stackRow.id, result.status, operation.id);
-      refreshAutoUpdateNext(stackRow.id, metadata);
+      refreshAutoUpdateNext(stackRow.id, config);
       await refreshStackAfterOperation(stackRow.id, result.status === "success");
       if (result.status === "success") {
-        markAutoUpdateApplied(stackRow.id, config.services);
+        markAutoUpdateApplied(stackRow.id, config.services, config.excludeServices);
       }
     } catch (error) {
       appendOutput(operation.id, `[cetus] ${error instanceof Error ? error.message : String(error)}\n`);
@@ -329,14 +357,6 @@ export function startDeleteOperation(stackId: string, actor: Actor, request?: Re
   const stackRow = getStackRow(stackId);
   if (!stackRow) throw new Error("Stack not found");
   const owner = getHostRow(stackRow.hostId);
-  if (owner?.kind === "worker") {
-    throw new Error("Remote delete is not part of the first worker slice. Use down to stop the stack.");
-  }
-  try {
-    snapshotCurrent(stackRow, "delete", actor.name);
-  } catch (error) {
-    console.error("[cetus] snapshot before delete failed", error);
-  }
   const operation = createOperation({
     type: "delete",
     hostId: stackRow.hostId,
@@ -355,6 +375,31 @@ export function startDeleteOperation(stackId: string, actor: Actor, request?: Re
     metadata: { operationId: operation.id },
     request,
   });
+
+  if (owner?.kind === "worker") {
+    markRemoteStackDeleting(stackRow.hostId, stackRow.name);
+    const sent = sendToWorker(stackRow.hostId, {
+      type: "command",
+      operationId: operation.id,
+      stackName: stackRow.name,
+      projectName: stackRow.projectName,
+      args: ["down", "--remove-orphans"],
+      argsAfter: [],
+      action: "delete",
+    });
+    if (!sent) {
+      clearRemoteStackDeleting(stackRow.hostId, stackRow.name);
+      appendOutput(operation.id, "[cetus] Worker is not connected.\n");
+      finishOperation(operation.id, "failed", 1);
+    }
+    return operation;
+  }
+
+  try {
+    snapshotCurrent(stackRow, "delete", actor.name);
+  } catch (error) {
+    console.error("[cetus] snapshot before delete failed", error);
+  }
 
   void (async () => {
     try {

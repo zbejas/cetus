@@ -134,14 +134,15 @@ The Compose files are the source of truth for YAML. SQLite is an index and contr
 
 ### Workers
 
-The worker sends `hello` with either a one-time enrollment token or a stored host id and secret. The manager answers with `enrolled`, then accepts snapshots, heartbeats, log chunks, update-check results, and operation output. Manager commands include compose actions, metadata writes, update checks, auto-updates, and log requests.
+The worker sends `hello` with either a one-time enrollment token or a stored host id and secret. The manager answers with `enrolled`, then accepts snapshots, heartbeats, log chunks, update-check results, compose write results, container action results, and operation output. Manager commands include compose actions, metadata and compose writes, container actions, update checks, auto-updates, and log requests.
 
 Enrollment tokens expire after 15 minutes and are single use. Reconnects use the secret in `data-worker/worker.json`. The protocol and remote capability limits are owned by [Worker mode](worker.md).
 
 ### Background work
 
 - The update-check sweep runs 15 seconds after boot and then every six hours. It skips stacks checked in the last hour and stacks currently updating.
-- The auto-update scheduler ticks every 30 seconds, evaluates each stack's cron expression in its configured timezone, and refuses to start a second operation while one is running.
+- The auto-update scheduler ticks every 30 seconds, resolves the fleet default from `settings.autoUpdate` against each stack's override, evaluates the cron expression in its configured timezone, and refuses to start a second operation while one is running.
+- Cetus worker stacks are hidden from fleet lists, update sweeps, and bulk updates so Cetus never manages the container that runs Cetus.
 - Auto-updates run the health gate and roll back to the previous compose file and image ids on failure. See [Updates](updates.md).
 - The backup scheduler ticks every minute, runs a daily backup at `CETUS_BACKUP_CRON`, and prunes older archives to `CETUS_BACKUP_KEEP`. See [Backups](backups.md).
 - The retention job runs daily and deletes audit rows older than `CETUS_AUDIT_RETENTION_DAYS` and notification deliveries older than `CETUS_NOTIFICATION_RETENTION_DAYS`.
@@ -160,13 +161,14 @@ Enrollment tokens expire after 15 minutes and are single use. Reconnects use the
 | `/hosts/enroll` | Worker enrollment |
 | `/hosts/:hostId` | Host detail and inventory |
 | `/activity` | Operations and audit |
-| `/settings` | Instance, access, authentication, mail, notifications, API keys, appearance |
+| `/settings` | Instance, appearance, updates, access, authentication, mail, notifications, API keys |
 
 ## Gotchas & invariants
 
 - The manager is the only public HTTP surface. Never publish an inbound worker port; workers dial out.
 - SQLite is not the source of YAML. Editing a compose file on disk without a scan leaves the index stale until `syncStacks` runs.
-- Remote compose editing, remote delete, remote container actions, remote stack exec, and remote PTY terminals are not implemented. The API returns `501` and the UI disables the controls instead of silently targeting the manager's Docker daemon.
+- Remote compose editing, delete, and managed container actions use explicit worker messages. Remote stack exec, snapshot restore, and remote PTY terminals are not implemented; the API returns `501` and the UI disables those controls instead of silently targeting the manager's Docker daemon.
+- Standalone containers without a Compose project label are read-only in the UI and API. Add them to a Compose stack before managing their lifecycle.
 - The public URL is the better-auth issuer and is fixed at process start. Changing it requires a manager restart.
 - OIDC configuration is read when better-auth initializes. Save it, then restart the manager.
 - When Docker is detected, the stacks directory is locked to the mounted path. Set `CETUS_ALLOW_STACKS_DIR_CHANGE=true` only when you intend to move it.

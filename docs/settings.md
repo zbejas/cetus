@@ -37,6 +37,7 @@ These are the only values that must be set outside the database:
 | Stacks directory | `settings.stacksDir` | Local Compose scan root |
 | Allowed origins | `settings.allowedOrigins` | Extra CORS and auth origins |
 | Trust proxy | `settings.trustProxy` | Honors forwarding headers for audit IPs |
+| Global auto-update | `settings.autoUpdate` | Fleet update schedule inherited by stacks without an override |
 
 ## Users and access
 
@@ -62,6 +63,12 @@ The API enforces the same rules:
 | `POST` | `/api/invites/:token/accept` | public | Create the invited account |
 
 Cetus refuses to remove the last admin or let an admin remove their own account. Admins cannot change their own role from the Access tab; another admin must do it. Resetting another user's password signs out their active sessions.
+
+## Updates
+
+The Updates tab owns the fleet auto-update default. It stores `enabled`, `cron`, `timezone`, `healthCheck`, `rollback`, and `healthGraceSeconds` under `settings.autoUpdate` in SQLite. The default is disabled, `0 4 * * *`, and the server timezone.
+
+A stack with its own `autoUpdate` metadata ignores the fleet default. A stack without one inherits it. Open a stack's auto-update dialog to switch between the fleet schedule and a custom schedule, or to uncheck services such as `gluetun` so they keep their current image. The dashboard exposes the same default through the Schedule button next to Update all. See [Updates](updates.md) for inheritance, service selection, and rollback.
 
 ## Appearance
 
@@ -142,6 +149,14 @@ When Docker is detected, the stacks directory is locked to its boot value. This 
   "stacksDir": "/opt/stacks",
   "allowedOrigins": ["https://cetus.example.com"],
   "trustProxy": true,
+  "autoUpdate": {
+    "enabled": true,
+    "cron": "0 4 * * *",
+    "timezone": "Europe/Ljubljana",
+    "healthCheck": true,
+    "rollback": true,
+    "healthGraceSeconds": 90
+  },
   "oidc": {
     "enabled": true,
     "name": "Sign in with Pocket ID",

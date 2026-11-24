@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeStatus, isOneShot, safeStackName, validateComposeText } from "./stacks.ts";
+import { computeStatus, isCetusWorkerStackName, isOneShot, safeStackName, validateComposeText } from "./stacks.ts";
 import type { ServiceState } from "@shared/types.ts";
 
 function service(overrides: Partial<ServiceState>): ServiceState {
@@ -44,6 +44,13 @@ describe("stack validation", () => {
     expect(safeStackName("Hello")).toBe(false);
     expect(safeStackName("../escape")).toBe(false);
     expect(safeStackName("with space")).toBe(false);
+  });
+
+  test("the Cetus worker stack is hidden from fleet lists", () => {
+    expect(isCetusWorkerStackName("cetus-worker", "cetus-worker")).toBe(true);
+    expect(isCetusWorkerStackName("cetus-worker", "arrs")).toBe(true);
+    expect(isCetusWorkerStackName("media", "cetus-worker")).toBe(true);
+    expect(isCetusWorkerStackName("media", "media")).toBe(false);
   });
 });
 

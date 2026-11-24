@@ -3,8 +3,11 @@ import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { AUTO_UPDATE_ACTOR, startAutoUpdateOperation } from "./operations.ts";
 import { readMetadata } from "./stacks.ts";
+import { isCetusWorkerStackName } from "./cetusWorker.ts";
 import { cronMatches, isValidCron } from "./cron.ts";
 import { readAutoUpdateState, refreshAutoUpdateNext } from "./autoUpdateState.ts";
+import { resolveAutoUpdate } from "./autoUpdateConfig.ts";
+import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
 import { checkStacksForUpdates, readUpdateCheck } from "./updateCheckState.ts";
 import { createBackup, listBackups } from "./backups.ts";
 import { config } from "../config.ts";
@@ -17,9 +20,14 @@ let backupTicking = false;
 let retentionStarted = false;
 
 function refreshAllNextRuns() {
+  const global = readGlobalAutoUpdate();
   for (const row of db.select().from(schema.stack).all()) {
     try {
-      refreshAutoUpdateNext(row.id, readMetadata(row));
+      if (isCetusWorkerStackName(row.name, row.projectName)) {
+        refreshAutoUpdateNext(row.id, null);
+        continue;
+      }
+      refreshAutoUpdateNext(row.id, resolveAutoUpdate(readMetadata(row), global).config);
     } catch (error) {
       console.error("[cetus] could not refresh auto-update next run", row.name, error);
     }
@@ -31,12 +39,14 @@ async function tick() {
   ticking = true;
   try {
     const now = new Date();
+    const global = readGlobalAutoUpdate();
     for (const row of db.select().from(schema.stack).all()) {
-      const metadata = readMetadata(row);
-      const config = metadata.autoUpdate;
-      if (!config?.enabled || !config.cron) continue;
-      const timezone = config.timezone || "UTC";
-      if (!cronMatches(config.cron, now, timezone)) continue;
+      if (isCetusWorkerStackName(row.name, row.projectName)) continue;
+      const resolved = resolveAutoUpdate(readMetadata(row), global);
+      const autoConfig = resolved.config;
+      if (!autoConfig?.enabled || !autoConfig.cron) continue;
+      const timezone = autoConfig.timezone || "UTC";
+      if (!cronMatches(autoConfig.cron, now, timezone)) continue;
       const running = db.select().from(schema.operation).where(and(
         eq(schema.operation.stackId, row.id),
         eq(schema.operation.status, "running"),
@@ -45,7 +55,10 @@ async function tick() {
       const state = readAutoUpdateState(row.id);
       if (state.lastRunAt && Math.abs(now.getTime() - new Date(state.lastRunAt).getTime()) < 60_000) continue;
       try {
-        startAutoUpdateOperation(row.id, AUTO_UPDATE_ACTOR);
+        startAutoUpdateOperation(row.id, AUTO_UPDATE_ACTOR, undefined, {
+          config: autoConfig,
+          trigger: "schedule",
+        });
         console.log(`[cetus] auto-update started for ${row.name}`);
       } catch (error) {
         console.error(`[cetus] auto-update failed to start for ${row.name}`, error);
@@ -72,6 +85,7 @@ async function runUpdateCheckSweep() {
     const cutoff = Date.now() - 60 * 60 * 1_000;
     const rows = db.select().from(schema.stack).all().filter((row) => {
       if (row.status === "updating") return false;
+      if (isCetusWorkerStackName(row.name, row.projectName)) return false;
       const cached = readUpdateCheck(row.id);
       return !cached || new Date(cached.checkedAt).getTime() < cutoff;
     });

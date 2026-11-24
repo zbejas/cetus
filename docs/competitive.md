@@ -52,7 +52,7 @@ Legend: Yes, No, Partial. The Cetus column reflects the current working slice an
 | Scoped API keys with targets | No | Partial, metadata | No, user-level keys | Yes, resource, action, target |
 | MCP server | No | Not found in cloned tree | No | Yes |
 | Image update detection | No | Partial, Git and registry | Partial | Yes |
-| Auto-update schedule | No | Yes | No | Yes, per stack |
+| Auto-update schedule | No | Yes | No | Yes, fleet default plus per-stack overrides |
 | Health-gated rollback | No | Partial, deployment rollback | No | Yes |
 | Docker container inventory | Partial | Yes | Yes | Yes |
 | Standalone container management | No | Yes | Yes | Yes |

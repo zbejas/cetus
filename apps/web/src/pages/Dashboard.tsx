@@ -5,6 +5,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity as ActivityIcon,
   ArrowUpRight,
+  CalendarClock,
   ChevronRight,
   Container,
   FolderSearch,
@@ -19,8 +20,10 @@ import {
   Zap,
 } from "lucide-react";
 import type { AuditEntry, DashboardData, HostSummary, StackSummary } from "@shared/types";
-import { useCheckAllUpdates, useDashboard, useMe, useScanStacks } from "../lib/queries";
+import { useApplyAllUpdates, useCheckAllUpdates, useDashboard, useMe, useScanStacks } from "../lib/queries";
 import { can, scopeReason } from "../lib/api";
+import { scheduleLabel } from "../lib/autoUpdate";
+import { GlobalAutoUpdateDialog } from "../components/GlobalAutoUpdateDialog";
 import { useToast } from "../components/Toast";
 import { StatusBadge, StatusDot } from "../components/Status";
 import { Badge, Button, EmptyState, IconButton, PageHeader, Skeleton } from "../components/ui";
@@ -35,13 +38,17 @@ export function DashboardPage() {
   const dashboard = useDashboard();
   const scan = useScanStacks();
   const updateCheck = useCheckAllUpdates();
+  const applyAll = useApplyAllUpdates();
   const me = useMe();
   const canWrite = can(me.data?.actor.scopes, "stacks:write");
+  const canApply = can(me.data?.actor.scopes, "updates:apply");
+  const canConfigure = can(me.data?.actor.scopes, "settings:write");
   const writeReason = scopeReason("stacks:write");
   const toast = useToast();
   const navigate = useNavigate();
   const data = dashboard.data;
   const [refreshing, setRefreshing] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const handlingNewStack = useRef(false);
 
   async function refreshDashboard() {
@@ -199,6 +206,32 @@ export function DashboardPage() {
     navigate({ to: "/hosts" });
   }
 
+  async function updateAll() {
+    if (!canApply || applyAll.isPending) return;
+    try {
+      const result = await applyAll.mutateAsync();
+      await dashboard.refetch();
+      if (result.started.length > 0) {
+        toast.success(
+          `Updating ${result.started.length} stack${result.started.length === 1 ? "" : "s"}`,
+          result.skipped.length > 0
+            ? `${result.skipped.length} skipped. Progress is on each stack page.`
+            : "Progress is on each stack page.",
+        );
+      } else if (result.skipped.length > 0) {
+        toast.push({
+          title: "No updates started",
+          description: result.skipped[0]?.reason ?? "No eligible stack was found.",
+          tone: "info",
+        });
+      } else {
+        toast.success("Nothing to update", "No visible stack has an available image update.");
+      }
+    } catch (error) {
+      toast.error("Update all failed", error instanceof Error ? error.message : "The update request did not complete.");
+    }
+  }
+
   async function checkForUpdates() {
     if (updateCheck.isPending) return;
     try {
@@ -312,10 +345,21 @@ export function DashboardPage() {
             failed={data.updatesFailed ?? 0}
             checking={updateCheck.isPending}
             onCheck={() => void checkForUpdates()}
+            globalAutoUpdate={data.globalAutoUpdate}
+            canApply={canApply}
+            canConfigure={canConfigure}
+            updating={applyAll.isPending}
+            onUpdateAll={() => void updateAll()}
+            onConfigureSchedule={() => setScheduleOpen(true)}
           />
           <ActivityPanel activity={data.activity} />
         </div>
       </div>
+      <GlobalAutoUpdateDialog
+        open={scheduleOpen}
+        config={data.globalAutoUpdate}
+        onClose={() => setScheduleOpen(false)}
+      />
     </div>
   );
 }
@@ -641,21 +685,65 @@ function UpdateQueuePanel({
   failed,
   checking,
   onCheck,
+  globalAutoUpdate,
+  canApply,
+  canConfigure,
+  updating,
+  onUpdateAll,
+  onConfigureSchedule,
 }: {
   updates: DashboardData["updates"];
   checkedAt: string | null;
   failed: number;
   checking: boolean;
   onCheck: () => void;
+  globalAutoUpdate: DashboardData["globalAutoUpdate"];
+  canApply: boolean;
+  canConfigure: boolean;
+  updating: boolean;
+  onUpdateAll: () => void;
+  onConfigureSchedule: () => void;
 }) {
   return (
     <section className="panel">
-      <div className="panel-header">
+      <div className="panel-header" style={{ flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <RefreshCw size={15} color="var(--accent)" />
           <h3>Update queue</h3>
+          <Badge tone={updates.length > 0 ? "warn" : "default"}>{updates.length} queued</Badge>
         </div>
-        <Badge tone={updates.length > 0 ? "warn" : "default"}>{updates.length} queued</Badge>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onConfigureSchedule}
+            disabled={!canConfigure}
+            aria-disabled={!canConfigure}
+            title={canConfigure ? scheduleLabel(globalAutoUpdate) : scopeReason("settings:write")}
+          >
+            <CalendarClock size={13} /> Schedule
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={onUpdateAll}
+            loading={canApply && updating}
+            disabled={!canApply || updates.length === 0}
+            aria-disabled={!canApply || updates.length === 0}
+            title={
+              !canApply
+                ? scopeReason("updates:apply")
+                : updates.length === 0
+                  ? "No visible stack has an available update"
+                  : "Pull newer images and recreate every stack with an update"
+            }
+          >
+            <Zap size={13} /> Update all
+          </Button>
+        </div>
+      </div>
+      <div style={{ padding: "8px 16px", borderBottom: "1px solid var(--border)", color: "var(--muted)", fontSize: 11 }}>
+        Global auto-update: <strong style={{ color: "var(--text-soft)", fontWeight: 600 }}>{scheduleLabel(globalAutoUpdate)}</strong>. Per-stack schedules and service exclusions override it.
       </div>
 
       {updates.length === 0 ? (

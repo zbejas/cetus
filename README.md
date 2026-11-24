@@ -55,7 +55,7 @@ One Bun server, one React SPA, file-owned Compose stacks, and every Docker host 
 
 - **File-first.** Every stack stays on disk under the stacks directory. Cetus edits bytes, preserves comments, and keeps snapshots. SQLite is an index, not the source of truth.
 - **One fleet.** The manager runs its own Docker host and accepts outbound workers. Enroll a remote host without opening an inbound port.
-- **Real Compose.** Deploy, start, stop, restart, down, update, service actions, live logs, health, CPU and memory, inventory, and a non-interactive console.
+- **Real Compose.** Edit compose and env files, deploy, update, delete to trash, run service and container actions, and read live logs on local and worker hosts. Fleet and per-stack update schedules support service exclusions.
 - **Scoped access.** Password and OIDC sign-in, roles, invites, API keys with host and stack targets, audit, and notifications.
 - **Backups.** A consistent SQLite copy, the master key, and the stack files in one archive. Schedule daily, download, and restore on the next start.
 - **Agent-ready.** MCP runs over the same scoped keys, so an AI client sees exactly what the key allows. The generated OpenAPI reference is at `/api/docs`.
@@ -115,7 +115,7 @@ See [Development](docs/development.md) for the full command and test reference, 
 
 Cetus v1 is usable for a homelab fleet: file-first stacks, multi-host workers, scoped access, updates, backups, OpenAPI, and an MCP surface with the same permissions.
 
-Post-v1: passkeys and TOTP, remote compose editing, remote PTY terminals, and a first-party CLI.
+Post-v1: passkeys and TOTP, remote PTY terminals, and a first-party CLI.
 
 ## License
 

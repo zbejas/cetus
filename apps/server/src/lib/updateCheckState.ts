@@ -67,15 +67,17 @@ export function clearUpdateCheck(stackId: string) {
   db.delete(schema.setting).where(eq(schema.setting.key, keyFor(stackId))).run();
 }
 
-export function markAutoUpdateApplied(stackId: string, services?: string[]) {
+export function markAutoUpdateApplied(stackId: string, services?: string[], excludeServices?: string[]) {
   const check = readUpdateCheck(stackId);
   if (!check) return;
   const selected = services?.length ? new Set(services) : null;
+  const excluded = new Set(excludeServices ?? []);
   const next: UpdateCheckResult = {
     ...check,
     checkedAt: new Date().toISOString(),
     services: check.services.map((service) => {
       if (selected && !selected.has(service.service)) return service;
+      if (excluded.has(service.service)) return service;
       if (!service.latestDigest) return service;
       return {
         ...service,

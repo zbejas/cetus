@@ -95,7 +95,7 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
   }
 
   async function performAction(container: DockerContainer, action: string): Promise<boolean> {
-    if (remote || !canContainerWrite) return false;
+    if (!canContainerWrite || container.unmanaged) return false;
     const key = `${container.id}:${action}`;
     setBusy(key);
     try {
@@ -274,20 +274,19 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
             <ContainersTab
               containers={sortedContainers}
               busy={busy}
-              remote={remote}
               canWrite={canContainerWrite}
               onAction={(container, action) => void performAction(container, action)}
               onLogs={(container) => void loadLogs(container)}
               onRemove={setRemoveTarget}
             />
           ) : tab === "images" ? (
-            <ImagesTab images={inventory.images} remote={remote} />
+            <ImagesTab images={inventory.images} />
           ) : tab === "volumes" ? (
-            <VolumesTab volumes={inventory.volumes} remote={remote} />
+            <VolumesTab volumes={inventory.volumes} />
           ) : tab === "networks" ? (
-            <NetworksTab networks={inventory.networks} remote={remote} />
+            <NetworksTab networks={inventory.networks} />
           ) : (
-            <DfTab rows={inventory.df} remote={remote} />
+            <DfTab rows={inventory.df} />
           )
         ) : null}
       </div>
@@ -703,7 +702,6 @@ function OverviewTab({
 function ContainersTab({
   containers,
   busy,
-  remote,
   canWrite,
   onAction,
   onLogs,
@@ -711,7 +709,6 @@ function ContainersTab({
 }: {
   containers: DockerContainer[];
   busy: string | null;
-  remote: boolean;
   canWrite: boolean;
   onAction: (container: DockerContainer, action: string) => void;
   onLogs: (container: DockerContainer) => void;
@@ -719,7 +716,7 @@ function ContainersTab({
 }) {
   const running = containers.filter((container) => container.state === "running").length;
   const unmanaged = containers.filter((container) => container.unmanaged).length;
-  const writeReason = remote ? "Remote container actions are not supported yet" : canWrite ? undefined : scopeReason("containers:write");
+  const writeReason = canWrite ? undefined : scopeReason("containers:write");
 
   return (
     <section className="panel">
@@ -751,6 +748,8 @@ function ContainersTab({
               {containers.map((container) => {
                 const actionPrefix = `${container.id}:`;
                 const rowBusy = busy?.startsWith(actionPrefix) ?? false;
+                const actionReason = container.unmanaged ? "Standalone containers are read-only" : writeReason;
+                const actionsDisabled = busy !== null || !canWrite || container.unmanaged;
                 return (
                   <tr key={container.id}>
                     <td data-label="Container">
@@ -798,19 +797,19 @@ function ContainersTab({
                         {container.state === "running" ? (
                           <>
                             <IconButton
-                              label={`Stop ${container.names}${writeReason ? ` (${writeReason})` : ""}`}
-                              title={writeReason ?? `Stop ${container.names}`}
-                              disabled={busy !== null || !canWrite || remote}
-                              aria-disabled={!canWrite || remote}
+                              label={`Stop ${container.names}${actionReason ? ` (${actionReason})` : ""}`}
+                              title={actionReason ?? `Stop ${container.names}`}
+                              disabled={actionsDisabled}
+                              aria-disabled={actionsDisabled}
                               onClick={() => onAction(container, "stop")}
                             >
                               {busy === `${container.id}:stop` ? <LoaderCircle size={13} className="animate-spin" /> : <Square size={13} />}
                             </IconButton>
                             <IconButton
-                              label={`Restart ${container.names}${writeReason ? ` (${writeReason})` : ""}`}
-                              title={writeReason ?? `Restart ${container.names}`}
-                              disabled={busy !== null || !canWrite || remote}
-                              aria-disabled={!canWrite || remote}
+                              label={`Restart ${container.names}${actionReason ? ` (${actionReason})` : ""}`}
+                              title={actionReason ?? `Restart ${container.names}`}
+                              disabled={actionsDisabled}
+                              aria-disabled={actionsDisabled}
                               onClick={() => onAction(container, "restart")}
                             >
                               {busy === `${container.id}:restart` ? <LoaderCircle size={13} className="animate-spin" /> : <RotateCw size={13} />}
@@ -818,20 +817,20 @@ function ContainersTab({
                           </>
                         ) : (
                           <IconButton
-                            label={`Start ${container.names}${writeReason ? ` (${writeReason})` : ""}`}
-                            title={writeReason ?? `Start ${container.names}`}
-                            disabled={busy !== null || !canWrite || remote}
-                            aria-disabled={!canWrite || remote}
+                            label={`Start ${container.names}${actionReason ? ` (${actionReason})` : ""}`}
+                            title={actionReason ?? `Start ${container.names}`}
+                            disabled={actionsDisabled}
+                            aria-disabled={actionsDisabled}
                             onClick={() => onAction(container, "start")}
                           >
                             {busy === `${container.id}:start` ? <LoaderCircle size={13} className="animate-spin" /> : <Play size={13} />}
                           </IconButton>
                         )}
                         <IconButton
-                          label={`Remove ${container.names}${writeReason ? ` (${writeReason})` : ""}`}
-                          title={writeReason ?? `Remove ${container.names}`}
-                          disabled={rowBusy || busy !== null || !canWrite || remote}
-                          aria-disabled={!canWrite || remote}
+                          label={`Remove ${container.names}${actionReason ? ` (${actionReason})` : ""}`}
+                          title={actionReason ?? `Remove ${container.names}`}
+                          disabled={rowBusy || actionsDisabled}
+                          aria-disabled={actionsDisabled}
                           onClick={() => onRemove(container)}
                           style={{ color: "var(--danger)" }}
                         >
@@ -849,18 +848,14 @@ function ContainersTab({
         <EmptyState
           icon={<ContainerIcon size={18} />}
           title="No containers reported"
-          description={
-            remote
-              ? "Container inventory is only available for the local host in this build."
-              : "Nothing is running or stopped on this host. Deploy a stack to create containers."
-          }
+          description="Nothing is running or stopped on this host. Deploy a stack to create containers."
         />
       )}
     </section>
   );
 }
 
-function ImagesTab({ images, remote }: { images: DockerImage[]; remote: boolean }) {
+function ImagesTab({ images }: { images: DockerImage[] }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -871,7 +866,7 @@ function ImagesTab({ images, remote }: { images: DockerImage[]; remote: boolean 
         </div>
         <span className="muted" style={{ fontSize: 11 }}>Read-only</span>
       </div>
-      <NoteBar>Read-only. Image prune arrives with the worker update.</NoteBar>
+      <NoteBar>Read-only. Image prune is not exposed in this build.</NoteBar>
       {images.length ? (
         <div className="table-wrap" style={{ borderRadius: 0 }}>
           <table className="data-table" aria-label="Docker images">
@@ -911,18 +906,14 @@ function ImagesTab({ images, remote }: { images: DockerImage[]; remote: boolean 
         <EmptyState
           icon={<Images size={18} />}
           title="No images reported"
-          description={
-            remote
-              ? "Image inventory is only available for the local host in this build."
-              : "Docker has no cached images on this host."
-          }
+          description="Docker has no cached images on this host."
         />
       )}
     </section>
   );
 }
 
-function VolumesTab({ volumes, remote }: { volumes: DockerVolume[]; remote: boolean }) {
+function VolumesTab({ volumes }: { volumes: DockerVolume[] }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -965,18 +956,14 @@ function VolumesTab({ volumes, remote }: { volumes: DockerVolume[]; remote: bool
         <EmptyState
           icon={<Database size={18} />}
           title="No volumes reported"
-          description={
-            remote
-              ? "Volume inventory is only available for the local host in this build."
-              : "No named volumes exist on this host yet."
-          }
+          description="No named volumes exist on this host yet."
         />
       )}
     </section>
   );
 }
 
-function NetworksTab({ networks, remote }: { networks: DockerNetwork[]; remote: boolean }) {
+function NetworksTab({ networks }: { networks: DockerNetwork[] }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1025,18 +1012,14 @@ function NetworksTab({ networks, remote }: { networks: DockerNetwork[]; remote: 
         <EmptyState
           icon={<Network size={18} />}
           title="No networks reported"
-          description={
-            remote
-              ? "Network inventory is only available for the local host in this build."
-              : "Docker has not created any networks beyond the defaults."
-          }
+          description="Docker has not created any networks beyond the defaults."
         />
       )}
     </section>
   );
 }
 
-function DfTab({ rows, remote }: { rows: DockerDfRow[]; remote: boolean }) {
+function DfTab({ rows }: { rows: DockerDfRow[] }) {
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1097,11 +1080,7 @@ function DfTab({ rows, remote }: { rows: DockerDfRow[]; remote: boolean }) {
         <EmptyState
           icon={<HardDrive size={18} />}
           title="No disk usage reported"
-          description={
-            remote
-              ? "Disk inventory is only available for the local host in this build."
-              : "Docker did not return system df rows for this host."
-          }
+          description="Docker did not return system df rows for this host."
         />
       )}
     </section>

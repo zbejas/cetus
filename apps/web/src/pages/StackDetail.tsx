@@ -191,14 +191,6 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
 
   function openEditor(tab: EditorTab = "compose", readOnly = false) {
     if (!stack) return;
-    if (stack.hostKind === "worker" && !readOnly) {
-      toast.push({
-        title: "Remote editing is not enabled yet",
-        description: "Actions, logs, and inventory work over the worker channel. Compose editing is the next slice.",
-        tone: "info",
-      });
-      return;
-    }
     if (!canWrite && !readOnly) return;
     setComposeText(stack.compose);
     setEnvText(envRedacted ? "" : stack.env);
@@ -265,6 +257,10 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
     });
   }
 
+  function actionPending(name: string) {
+    return action.isPending && action.variables?.action === name;
+  }
+
   function runAction(name: string) {
     if (!canDeploy) return;
     setMoreOpen(false);
@@ -301,7 +297,7 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
   }
 
   async function confirmDelete() {
-    if (!stack || !canDelete || remoteStack || confirmName !== stack.name) return;
+    if (!stack || !canDelete || confirmName !== stack.name) return;
     try {
       const result = await api.stackAction(stackId, "delete", { confirmName });
       setOperationId(result.id);
@@ -373,7 +369,7 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
           <Button
             variant="primary"
             onClick={deploy}
-            loading={canDeploy && action.isPending}
+            loading={canDeploy && actionPending("deploy")}
             disabled={!canDeploy}
             aria-disabled={!canDeploy}
             title={canDeploy ? undefined : scopeReason("stacks:deploy")}
@@ -381,20 +377,23 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
             <Rocket size={14} /> Deploy
           </Button>
           <Button
+            onClick={() => runAction("update")}
+            loading={canDeploy && actionPending("update")}
+            disabled={!canDeploy}
+            aria-disabled={!canDeploy}
+            title={canDeploy ? "Pull newer images and recreate the stack" : scopeReason("stacks:deploy")}
+          >
+            <RefreshCw size={14} /> Update
+          </Button>
+          <Button
             onClick={() => openEditor("compose")}
-            disabled={stack.hostKind === "worker" || !canWrite}
-            aria-disabled={stack.hostKind === "worker" || !canWrite}
-            title={
-              stack.hostKind === "worker"
-                ? "Remote compose editing arrives with the worker file channel"
-                : !canWrite
-                  ? scopeReason("stacks:write")
-                  : undefined
-            }
+            disabled={!canWrite}
+            aria-disabled={!canWrite}
+            title={canWrite ? "Edit the compose files" : scopeReason("stacks:write")}
           >
             <Pencil size={14} /> Edit compose
           </Button>
-          {!canWrite || stack.hostKind === "worker" ? (
+          {!canWrite ? (
             <Button
               onClick={() => openEditor("compose", true)}
               title="Open the stack files read-only"
@@ -451,13 +450,17 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
           <button
             type="button"
             className="auto-update-chip"
-            data-on={stack.metadata.autoUpdate?.enabled ?? false}
+            data-on={Boolean(stack.effectiveAutoUpdate?.enabled)}
             onClick={() => setAutoUpdateOpen(true)}
             disabled={!canWrite}
             title={canWrite ? "Configure auto-update" : scopeReason("stacks:write")}
           >
             <RefreshCw size={11} />
-            {stack.metadata.autoUpdate?.enabled ? "Scheduled" : "Off"}
+            {stack.autoUpdateSource === "global"
+              ? "Global"
+              : stack.autoUpdateSource === "custom"
+                ? "Custom"
+                : "Off"}
           </button>
         </span>
       </div>
@@ -504,9 +507,7 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
               aria-disabled={editorReadOnly || !canDeploy}
               title={
                 editorReadOnly
-                  ? stack.hostKind === "worker"
-                    ? "Remote compose editing is not supported yet"
-                    : scopeReason("stacks:write")
+                  ? scopeReason("stacks:write")
                   : !canDeploy
                     ? scopeReason("stacks:deploy")
                     : undefined
@@ -520,13 +521,9 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
               disabled={editorReadOnly || !canWrite}
               aria-disabled={editorReadOnly || !canWrite}
               title={
-                editorReadOnly
-                  ? stack.hostKind === "worker"
-                    ? "Remote compose editing is not supported yet"
-                    : scopeReason("stacks:write")
-                  : !canWrite
-                    ? scopeReason("stacks:write")
-                    : undefined
+                editorReadOnly || !canWrite
+                  ? scopeReason("stacks:write")
+                  : undefined
               }
             >
               <Save size={14} /> Save draft
@@ -644,15 +641,9 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
                   <button
                     className="btn btn-ghost btn-sm"
                     onClick={() => openEditor("compose")}
-                    disabled={stack.hostKind === "worker" || !canWrite}
-                    aria-disabled={stack.hostKind === "worker" || !canWrite}
-                    title={
-                      stack.hostKind === "worker"
-                        ? "Remote editing not enabled yet"
-                        : !canWrite
-                          ? scopeReason("stacks:write")
-                          : undefined
-                    }
+                    disabled={!canWrite}
+                    aria-disabled={!canWrite}
+                    title={canWrite ? "Edit the compose files" : scopeReason("stacks:write")}
                   >
                     <Code2 size={13} /> Config
                   </button>
@@ -988,15 +979,9 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
           <Button variant="ghost" onClick={() => { setMoreOpen(false); setSnapshotsOpen(true); }}><History size={14} /> View snapshots</Button>
           <Button
             variant="danger"
-            disabled={stack.hostKind === "worker" || !canDelete}
-            aria-disabled={stack.hostKind === "worker" || !canDelete}
-            title={
-              stack.hostKind === "worker"
-                ? "Remote delete is not part of the first worker slice"
-                : !canDelete
-                  ? scopeReason("stacks:delete")
-                  : undefined
-            }
+            disabled={!canDelete}
+            aria-disabled={!canDelete}
+            title={canDelete ? undefined : scopeReason("stacks:delete")}
             onClick={() => { setMoreOpen(false); setDeleteOpen(true); }}
           >
             <Trash2 size={14} /> Delete stack
@@ -1073,7 +1058,7 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
         }
       >
         <p style={{ marginTop: 0, color: "var(--text-soft)" }}>
-          This runs <code className="mono">docker compose down</code> and moves <code className="mono">{stack.dir}</code> to Cetus trash. It does not permanently delete the folder.
+          This runs <code className="mono">docker compose down</code> and moves <code className="mono">{stack.dir}</code> to trash on {stack.hostKind === "worker" ? stack.host.name : "the Cetus manager"}. It does not permanently delete the folder.
         </p>
         <label className="label" htmlFor="confirm-name">Type <span className="mono">{stack.name}</span> to confirm</label>
         <Input id="confirm-name" value={confirmName} onChange={(event) => setConfirmName(event.target.value)} autoComplete="off" />

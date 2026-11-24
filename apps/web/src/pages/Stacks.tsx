@@ -18,6 +18,7 @@ import {
   Search,
   Server,
   Square,
+  Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -78,6 +79,7 @@ export function StacksPage() {
   const me = useMe();
   const canWrite = can(me.data?.actor.scopes, "stacks:write");
   const canDeploy = can(me.data?.actor.scopes, "stacks:deploy");
+  const canDelete = can(me.data?.actor.scopes, "stacks:delete");
   const searchStr = useRouterState({ select: (state) => state.location.searchStr });
   const urlHostId = useMemo(() => new URLSearchParams(searchStr).get("hostId")?.trim() || "all", [searchStr]);
   const toast = useToast();
@@ -91,6 +93,8 @@ export function StacksPage() {
   const [bulkBusy, setBulkBusy] = useState<"start" | "stop" | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [moreStack, setMoreStack] = useState<StackSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<StackSummary | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [compose, setCompose] = useState(DEFAULT_COMPOSE);
@@ -277,6 +281,23 @@ export function StacksPage() {
       invalidateStacks();
     } catch (error) {
       toast.error(`${titleCase(action)} failed`, error instanceof ApiError ? error.message : "Unknown error");
+    } finally {
+      setRowBusy((current) => (current === key ? null : current));
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget || !canDelete || deleteConfirm !== deleteTarget.name) return;
+    const key = `${deleteTarget.id}:delete`;
+    setRowBusy(key);
+    try {
+      await api.stackAction(deleteTarget.id, "delete", { confirmName: deleteConfirm });
+      toast.success("Delete queued", `${deleteTarget.displayName} on ${deleteTarget.hostName}.`);
+      setDeleteTarget(null);
+      setDeleteConfirm("");
+      invalidateStacks();
+    } catch (error) {
+      toast.error("Delete failed", error instanceof ApiError ? error.message : "Unknown error");
     } finally {
       setRowBusy((current) => (current === key ? null : current));
     }
@@ -835,7 +856,72 @@ export function StacksPage() {
             >
               <ExternalLink size={14} /> Open stack detail
             </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                const stack = moreStack;
+                setMoreStack(null);
+                setDeleteConfirm("");
+                setDeleteTarget(stack);
+              }}
+              disabled={!canDelete}
+              aria-disabled={!canDelete}
+              title={canDelete ? undefined : scopeReason("stacks:delete")}
+              style={{ justifyContent: "flex-start" }}
+            >
+              <Trash2 size={14} /> Delete stack
+            </Button>
           </div>
+        ) : null}
+      </Dialog>
+
+      <Dialog
+        open={deleteTarget !== null}
+        onClose={() => {
+          if (rowBusy) return;
+          setDeleteTarget(null);
+          setDeleteConfirm("");
+        }}
+        title={deleteTarget ? `Delete ${deleteTarget.displayName}` : "Delete stack"}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setDeleteTarget(null);
+                setDeleteConfirm("");
+              }}
+              disabled={rowBusy !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => void confirmDelete()}
+              loading={deleteTarget ? rowBusy === `${deleteTarget.id}:delete` : false}
+              disabled={!deleteTarget || deleteConfirm !== deleteTarget.name || rowBusy !== null}
+            >
+              <Trash2 size={14} /> Delete
+            </Button>
+          </>
+        }
+      >
+        {deleteTarget ? (
+          <>
+            <p style={{ marginTop: 0, color: "var(--text-soft)" }}>
+              This runs <code className="mono">docker compose down</code> and moves the stack folder to trash on{" "}
+              {deleteTarget.hostKind === "worker" ? deleteTarget.hostName : "the Cetus manager"}. Images and named volumes are not removed.
+            </p>
+            <label className="label" htmlFor="delete-confirm-name">
+              Type <span className="mono">{deleteTarget.name}</span> to confirm
+            </label>
+            <Input
+              id="delete-confirm-name"
+              value={deleteConfirm}
+              onChange={(event) => setDeleteConfirm(event.target.value)}
+              autoComplete="off"
+            />
+          </>
         ) : null}
       </Dialog>
     </div>
