@@ -57,7 +57,7 @@ import {
   startUpdateQueueScheduler,
 } from "../lib/updateQueue.ts";
 import { createBackup, deleteBackup, getBackup, listBackups, recoverInterruptedBackups, stageRestore } from "../lib/backups.ts";
-import { checkStackForUpdates, checkStacksForUpdates, clearUpdateCheck, listUpdateChecks, markAutoUpdateApplied, readUpdateCheck } from "../lib/updateCheckState.ts";
+import { checkStackForUpdates, checkStacksForUpdates, clearUpdateCheck, listUpdateChecks, markUpdateApplied, readUpdateCheck } from "../lib/updateCheckState.ts";
 import { getUserPalette, setUserPalette } from "../lib/preferences.ts";
 import {
   createInviteRecord,
@@ -1393,10 +1393,12 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
             const autoConfig = resolveAutoUpdate(readMetadata(row), readGlobalAutoUpdate()).config;
             refreshAutoUpdateNext(row.id, autoConfig);
             if (autoStatus === "success") {
-              markAutoUpdateApplied(row.id, autoConfig?.services, autoConfig?.excludeServices);
+              markUpdateApplied(row.id, autoConfig?.services, autoConfig?.excludeServices);
             }
           }
         }
+      } else if (status === "success" && operation.type === "update") {
+        markUpdateApplied(operation.stackId);
       }
       await refreshStackAfterOperation(operation.stackId, Boolean(message.deployed));
     }

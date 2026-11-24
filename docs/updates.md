@@ -51,6 +51,7 @@ compose services -> running container image -> local RepoDigests
 - Authenticated lookups use the Docker config from Settings > Registries. The manager points `DOCKER_CONFIG` at `<data>/docker`, merges a visible host `~/.docker/config.json` (or `CETUS_HOST_DOCKER_CONFIG`) under the Cetus credentials, and each worker does the same under its data directory. A credential change clears the remote cache and pushes a fresh Cetus config to connected workers.
 - A service pinned as `repo@sha256:...` is always current. A service with a `build:` key skips registry comparison because there is no registry tag to compare.
 - Results are stored as JSON under `updatecheck:<stackId>` in the `setting` table. On a registry error the previous digests are merged back, so a transient failure does not erase the last known state.
+- A successful stack Update marks every checked service as applied, so the Dashboard and stack header stop listing it before the next registry sweep. After any stack operation, check entries for services that no longer exist in the compose file are dropped.
 - The manager sweeps stacks 15 seconds after start and every six hours. A stack with a cached check newer than one hour is skipped so restarts do not hammer registries. A failed stack check does not abort the sweep.
 - Cetus worker stacks are hidden from the fleet list, dashboard, registry sweep, and bulk update. Their direct stack URL still works.
 

@@ -16,6 +16,41 @@ function extractDigests(text: string): string[] {
   return [...new Set(matches.map((value) => value.toLowerCase()))];
 }
 
+export function applyCheckServices(
+  check: UpdateCheckResult,
+  services?: string[],
+  excludeServices?: string[],
+): UpdateCheckResult {
+  const selected = services?.length ? new Set(services) : null;
+  const excluded = new Set(excludeServices ?? []);
+  const nextServices = check.services.map((service) => {
+    if (selected && !selected.has(service.service)) return service;
+    if (excluded.has(service.service)) return service;
+    if (!service.latestDigest) return service;
+    return {
+      ...service,
+      currentDigest: service.latestDigest,
+      updateAvailable: false,
+      error: undefined,
+    };
+  });
+  return {
+    ...check,
+    services: nextServices,
+    available: nextServices.some((service) => service.updateAvailable),
+  };
+}
+
+export function pruneCheckServices(check: UpdateCheckResult, serviceNames: string[]): UpdateCheckResult {
+  const names = new Set(serviceNames);
+  const services = check.services.filter((service) => names.has(service.service));
+  return {
+    ...check,
+    services,
+    available: services.some((service) => service.updateAvailable),
+  };
+}
+
 export function hasDigestUpdate(local: string[], remote: string | null): boolean {
   return Boolean(remote && local.length > 0 && !local.includes(remote));
 }
