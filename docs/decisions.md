@@ -89,7 +89,7 @@
 | D5 | MCP and public API polish come after the core flows | The same capability layer is reused. |
 | D6 | Testing is unit, real Docker integration, Playwright E2E, and visual regression | Matches the requested quality bar. |
 | D7 | CI gates: lint, typecheck, unit, integration, E2E, visual, build | No milestone closes on manual confidence alone. |
-| D8 | License is deferred | Operator decision. Keep dependencies permissive until then. |
+| D8 | License is MIT | Permissive, familiar, and compatible with the current dependency set. |
 | D9 | No Dockge code is reused | Clean-room implementation. Dockge is product inspiration only. |
 | D10 | Non-goals are enforced in v1: no Kubernetes, Swarm, PaaS builds, Postgres, or Traefik requirement | Protects the compose-first promise. |
 

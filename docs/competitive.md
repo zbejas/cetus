@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | Repository | [louislam/dockge](https://github.com/louislam/dockge) | [Dokploy/dokploy](https://github.com/Dokploy/dokploy) | [portainer/portainer](https://github.com/portainer/portainer) | new |
 | Stars | 24.9k | 38.7k | 38.9k | new |
-| License | MIT | Apache 2.0 plus source-available `/proprietary` | zlib | deferred |
+| License | MIT | Apache 2.0 plus source-available `/proprietary` | zlib | MIT |
 | Core model | Folder-first Compose manager | PaaS on Docker and Traefik | Broad container management | Compose-native fleet control |
 | Backend | Node, Express, Socket.IO | TypeScript, Next.js, tRPC, Drizzle, Postgres | Go | Bun, Elysia |
 | Frontend | Vue 3, Bootstrap 5 | React, Tailwind | React | React 19, TanStack, Tailwind |
@@ -217,7 +217,6 @@ Dozzle is not a fleet manager. It is the reference for the live log surface: rea
 - Portainer has years of edge cases, registries, and enterprise trust. Cetus cannot win on maturity.
 - Dockge has a loved simple UI. Cetus must not make the stack page harder to read in the name of modernization.
 - Every added feature weakens the compose-first promise. The non-goals list is a product feature.
-- The license decision affects adoption. MIT is the safest default for a Dockge alternative, but the operator deferred it.
 
 ## Sources
 

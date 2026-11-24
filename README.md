@@ -13,6 +13,7 @@ One Bun server, one React SPA, file-owned Compose stacks, and every Docker host 
   <a href="https://github.com/zbejas/cetus/issues"><img src="https://img.shields.io/github/issues/zbejas/cetus?style=flat-square" alt="Issues" /></a>
   <a href="https://github.com/zbejas/cetus/pkgs/container/cetus"><img src="https://img.shields.io/badge/container-ghcr.io%2Fzbejas%2Fcetus-38bdf8?style=flat-square" alt="Container image" /></a>
   <a href="docs/README.md"><img src="https://img.shields.io/badge/docs-engineering-4EAA25?style=flat-square" alt="Engineering docs" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-38bdf8?style=flat-square" alt="MIT license" /></a>
   <img src="https://img.shields.io/badge/runtime-Bun%201.4.2-000000?style=flat-square" alt="Bun 1.4.2" />
 </p>
 
@@ -115,3 +116,7 @@ See [Development](docs/development.md) for the full command and test reference, 
 Cetus v1 is usable for a homelab fleet: file-first stacks, multi-host workers, scoped access, updates, backups, OpenAPI, and an MCP surface with the same permissions.
 
 Post-v1: passkeys and TOTP, remote compose editing, remote PTY terminals, and a first-party CLI.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
