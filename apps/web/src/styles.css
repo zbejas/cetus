@@ -790,6 +790,28 @@ a {
   gap: 12px;
 }
 
+.dashboard-flow {
+  columns: 1;
+  column-gap: 12px;
+}
+
+.dashboard-flow > * {
+  break-inside: avoid;
+  margin-bottom: 12px;
+}
+
+@media (min-width: 1280px) {
+  .dashboard-flow {
+    columns: 2;
+  }
+}
+
+@media (min-width: 1900px) {
+  .dashboard-flow {
+    columns: 3;
+  }
+}
+
 .metric {
   position: relative;
   padding: 15px 16px;

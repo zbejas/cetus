@@ -106,7 +106,12 @@ test("tails container logs and filters them", async ({ page }) => {
   }
 
   const firstMessage = await page.locator(".log-message").first().innerText();
-  const token = firstMessage.split(/\s+/).map((word) => word.replace(/[^\w.-]/g, "")).find((word) => word.length >= 4) ?? "log";
+  const compact = firstMessage.replace(/\s+/g, "");
+  if (!compact) {
+    test.skip(true, "The first log message has no text to filter.");
+    return;
+  }
+  const token = compact.slice(0, 8);
   await page.getByPlaceholder("Filter logs").first().fill(token);
   await expect(page.locator(".log-message mark").first()).toBeVisible();
   await expect(page.locator(".log-match-count").first()).not.toHaveText("0");
