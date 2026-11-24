@@ -324,32 +324,36 @@ export function DashboardPage() {
         />
       </div>
 
-      <div className="dashboard-flow">
-        <FleetHealthPanel hosts={hosts} />
-        <RecentStacksPanel stacks={data.recentStacks} onCreate={openNewStack} canWrite={canWrite} />
-        <QuickActionsPanel
-          onNewStack={openNewStack}
-          onScan={scanFolder}
-          scanning={canWrite && scan.isPending}
-          canWrite={canWrite}
-          onOpenHost={openFirstHost}
-          onOpenLogs={() => navigate({ to: "/logs" })}
-          onOpenActivity={() => navigate({ to: "/activity" })}
-        />
-        <UpdateQueuePanel
-          updates={data.updates}
-          checkedAt={data.updatesCheckedAt ?? null}
-          failed={data.updatesFailed ?? 0}
-          checking={updateCheck.isPending}
-          onCheck={() => void checkForUpdates()}
-          globalAutoUpdate={data.globalAutoUpdate}
-          canApply={canApply}
-          canConfigure={canConfigure}
-          updating={applyAll.isPending}
-          onUpdateAll={() => void updateAll()}
-          onConfigureSchedule={() => setScheduleOpen(true)}
-        />
-        <ActivityPanel activity={data.activity} />
+      <div className="dashboard-grid">
+        <div className="dashboard-column">
+          <FleetHealthPanel hosts={hosts} />
+          <RecentStacksPanel stacks={data.recentStacks} onCreate={openNewStack} canWrite={canWrite} />
+        </div>
+        <div className="dashboard-column">
+          <UpdateQueuePanel
+            updates={data.updates}
+            checkedAt={data.updatesCheckedAt ?? null}
+            failed={data.updatesFailed ?? 0}
+            checking={updateCheck.isPending}
+            onCheck={() => void checkForUpdates()}
+            globalAutoUpdate={data.globalAutoUpdate}
+            canApply={canApply}
+            canConfigure={canConfigure}
+            updating={applyAll.isPending}
+            onUpdateAll={() => void updateAll()}
+            onConfigureSchedule={() => setScheduleOpen(true)}
+          />
+          <QuickActionsPanel
+            onNewStack={openNewStack}
+            onScan={scanFolder}
+            scanning={canWrite && scan.isPending}
+            canWrite={canWrite}
+            onOpenHost={openFirstHost}
+            onOpenLogs={() => navigate({ to: "/logs" })}
+            onOpenActivity={() => navigate({ to: "/activity" })}
+          />
+          <ActivityPanel activity={data.activity} />
+        </div>
       </div>
       <GlobalAutoUpdateDialog
         open={scheduleOpen}

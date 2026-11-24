@@ -149,6 +149,17 @@ export const setting = sqliteTable("setting", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(now),
 });
 
+export const registryCredential = sqliteTable("registry_credential", {
+  id: text("id").primaryKey(),
+  registry: text("registry").notNull(),
+  username: text("username").notNull(),
+  secret: text("secret").notNull(),
+  hostIds: text("host_ids").notNull().default("[]"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(now),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(now),
+}, (table) => [index("registry_credential_registry_idx").on(table.registry)]);
+
 export const userPreference = sqliteTable("user_preference", {
   userId: text("user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
   palette: text("palette"),
@@ -222,6 +233,7 @@ export const schema = {
   auditLog,
   apiKey,
   setting,
+  registryCredential,
   userPreference,
   invite,
   notificationChannel,

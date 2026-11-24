@@ -790,25 +790,28 @@ a {
   gap: 12px;
 }
 
-.dashboard-flow {
-  columns: 1;
-  column-gap: 12px;
+.dashboard-grid {
+  display: grid;
+  gap: 12px;
 }
 
-.dashboard-flow > * {
-  break-inside: avoid;
-  margin-bottom: 12px;
+.dashboard-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
 }
 
 @media (min-width: 1280px) {
-  .dashboard-flow {
-    columns: 2;
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1.85fr) minmax(360px, 1fr);
+    align-items: start;
   }
 }
 
-@media (min-width: 1900px) {
-  .dashboard-flow {
-    columns: 3;
+@media (min-width: 1800px) {
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 2fr) minmax(440px, 1fr);
   }
 }
 

@@ -42,7 +42,15 @@ import {
 } from "lucide-react";
 import { ALL_SCOPES, ROLE_SCOPES } from "@shared/scopes";
 import { DEFAULT_PALETTE, PALETTES, type PaletteId } from "@shared/palettes";
-import type { ApiKeyCreated, ApiKeySummary, BackupSummary, Role } from "@shared/types";
+import type {
+  ApiKeyCreated,
+  ApiKeySummary,
+  BackupSummary,
+  HostSummary,
+  RegistryCredentialInput,
+  RegistryCredentialSummary,
+  Role,
+} from "@shared/types";
 import {
   ApiError,
   api,
@@ -80,6 +88,10 @@ import {
   useUpdateNotificationChannel,
   useUpdateUser,
   useUsers,
+  useHosts,
+  useRegistries,
+  useSaveRegistry,
+  useDeleteRegistry,
 } from "../lib/queries";
 import { formatBytes, formatDate, relativeTime, shortId, titleCase } from "../lib/format";
 import { GlobalAutoUpdateDialog } from "../components/GlobalAutoUpdateDialog";
@@ -87,13 +99,14 @@ import { useToast } from "../components/Toast";
 import { Badge, Button, Dialog, EmptyState, IconButton, Input, PageHeader, Skeleton } from "../components/ui";
 import { scheduleLabel } from "../lib/autoUpdate";
 
-type SettingsTab = "general" | "appearance" | "updates" | "authentication" | "mail" | "access" | "notifications" | "keys" | "mcp" | "audit" | "backup";
+type SettingsTab = "general" | "appearance" | "updates" | "registries" | "authentication" | "mail" | "access" | "notifications" | "keys" | "mcp" | "audit" | "backup";
 type BadgeTone = "default" | "accent" | "success" | "warn" | "danger" | "info";
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Server; scope?: string }[] = [
   { id: "general", label: "General", icon: Server, scope: "settings:read" },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "updates", label: "Updates", icon: CalendarClock, scope: "settings:read" },
+  { id: "registries", label: "Registries", icon: LockKeyhole, scope: "settings:read" },
   { id: "authentication", label: "Authentication", icon: Fingerprint, scope: "settings:read" },
   { id: "mail", label: "Mail", icon: Mail, scope: "settings:read" },
   { id: "access", label: "Access", icon: Users, scope: "users:read" },
@@ -235,7 +248,7 @@ export function SettingsPage() {
 
   return (
     <div>
-      <PageHeader title="Settings" description="Appearance, updates, authentication, mail, access, keys, notifications, and backups." />
+      <PageHeader title="Settings" description="Appearance, updates, registries, authentication, mail, access, keys, notifications, and backups." />
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
         <div
@@ -273,6 +286,7 @@ export function SettingsPage() {
         {tab === "general" ? <GeneralTab /> : null}
         {tab === "appearance" ? <AppearanceTab /> : null}
         {tab === "updates" ? <UpdatesTab /> : null}
+        {tab === "registries" ? <RegistriesTab /> : null}
         {tab === "authentication" ? <AuthenticationTab /> : null}
         {tab === "mail" ? <MailTab /> : null}
         {tab === "access" ? <AccessTab /> : null}
@@ -1122,6 +1136,353 @@ function ChannelDialog({
         </div>
 
         <SwitchRow label="Enabled" description="Pause the channel without deleting it." checked={enabled} onChange={setEnabled} />
+      </form>
+    </Dialog>
+  );
+}
+
+
+function RegistriesTab() {
+  const me = useMe();
+  const registries = useRegistries();
+  const hosts = useHosts();
+  const deleteRegistry = useDeleteRegistry();
+  const toast = useToast();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<RegistryCredentialSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RegistryCredentialSummary | null>(null);
+  const canWrite = can(me.data?.actor.scopes, "settings:write");
+
+  function openCreate() {
+    setEditing(null);
+    setDialogOpen(true);
+  }
+
+  function openEdit(credential: RegistryCredentialSummary) {
+    setEditing(credential);
+    setDialogOpen(true);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    try {
+      await deleteRegistry.mutateAsync(deleteTarget.id);
+      toast.success("Credential removed", `${deleteTarget.registry} no longer applies to its hosts.`);
+      setDeleteTarget(null);
+    } catch (error) {
+      toast.error("Credential not removed", errorMessage(error, "The credential could not be deleted."));
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <section className="panel">
+        <div className="panel-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <LockKeyhole size={15} color="var(--accent)" />
+            <h3>Registry credentials</h3>
+            {registries.data ? <Badge>{registries.data.length}</Badge> : null}
+          </div>
+          {canWrite ? (
+            <Button variant="primary" size="sm" onClick={openCreate}>
+              <Plus size={14} /> Add credential
+            </Button>
+          ) : null}
+        </div>
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", color: "var(--muted)", fontSize: 12 }}>
+          Store a token once, then use it for image update checks and pulls on the hosts you pick. Secrets are encrypted
+          at rest and never returned to the browser.
+        </div>
+
+        {registries.isLoading ? (
+          <RowsSkeleton rows={3} />
+        ) : registries.isError ? (
+          <ErrorState title="Registry credentials could not be loaded" error={registries.error} onRetry={() => registries.refetch()} retrying={registries.isFetching} />
+        ) : !registries.data?.length ? (
+          <EmptyState
+            icon={<LockKeyhole size={20} />}
+            title="No registry credentials"
+            description="Add a GHCR or Docker Hub token so private images pull and update checks stop hitting anonymous rate limits."
+            action={canWrite ? <Button variant="primary" onClick={openCreate}><Plus size={14} /> Add credential</Button> : undefined}
+          />
+        ) : (
+          <div className="table-wrap" style={{ borderRadius: 0 }}>
+            <table className="data-table" aria-label="Registry credentials">
+              <thead>
+                <tr>
+                  <th scope="col">Registry</th>
+                  <th scope="col">Username</th>
+                  <th scope="col">Hosts</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Updated</th>
+                  <th scope="col" style={{ textAlign: "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {registries.data.map((credential) => (
+                  <tr key={credential.id}>
+                    <td data-label="Registry"><span className="mono" style={{ fontSize: 11, overflowWrap: "anywhere" }}>{credential.registry}</span></td>
+                    <td data-label="Username">{credential.username}</td>
+                    <td data-label="Hosts">
+                      <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                        {credential.hosts.length
+                          ? credential.hosts.map((host) => (
+                              <span key={host.id} className="chip" style={{ fontSize: 10.5 }}>{host.name}</span>
+                            ))
+                          : <span style={{ color: "var(--muted)", fontSize: 11.5 }}>No matching hosts</span>}
+                      </span>
+                    </td>
+                    <td data-label="Status">
+                      <Badge tone={credential.enabled ? "success" : "default"}>{credential.enabled ? "Enabled" : "Paused"}</Badge>
+                    </td>
+                    <td data-label="Updated"><span style={{ fontSize: 11.5, color: "var(--muted)" }}>{relativeTime(credential.updatedAt)}</span></td>
+                    <td data-label="Actions">
+                      {canWrite ? (
+                        <div className="user-row-actions">
+                          <IconButton type="button" label={`Edit ${credential.registry}`} onClick={() => openEdit(credential)}>
+                            <Pencil size={13} />
+                          </IconButton>
+                          <IconButton type="button" label={`Remove ${credential.registry}`} onClick={() => setDeleteTarget(credential)}>
+                            <Trash2 size={13} />
+                          </IconButton>
+                        </div>
+                      ) : <span style={{ color: "var(--muted)" }}>—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Server size={15} color="var(--accent)" />
+            <h3>How hosts receive credentials</h3>
+          </div>
+        </div>
+        <div className="panel-body" style={{ display: "grid", gap: 8, color: "var(--text-soft)", fontSize: 12.5 }}>
+          <p style={{ margin: 0 }}>
+            The manager writes its own <span className="mono">DOCKER_CONFIG</span> and sends each worker a matching
+            config over the authenticated WebSocket. Workers keep the file at <span className="mono">0600</span> in
+            their data directory.
+          </p>
+          <p className="help" style={{ margin: 0 }}>
+            Use a personal access token with read access to packages. Leave the secret blank when editing to keep the
+            saved one. A credential can target each host once per registry.
+          </p>
+        </div>
+      </section>
+
+      <RegistryDialog
+        open={dialogOpen}
+        credential={editing}
+        hosts={hosts.data ?? []}
+        onClose={() => {
+          setDialogOpen(false);
+          setEditing(null);
+        }}
+      />
+
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Remove registry credential"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button variant="danger" onClick={() => void confirmDelete()} loading={deleteRegistry.isPending}>Remove credential</Button>
+          </>
+        }
+      >
+        <div style={{ color: "var(--muted)", fontSize: 12.5, lineHeight: 1.6 }}>
+          Remove <strong style={{ color: "var(--text-soft)" }}>{deleteTarget?.username}</strong> for{" "}
+          <span className="mono">{deleteTarget?.registry}</span>? Targeted hosts lose access the next time they pull.
+        </div>
+      </Dialog>
+    </div>
+  );
+}
+
+function RegistryDialog({
+  open,
+  credential,
+  hosts,
+  onClose,
+}: {
+  open: boolean;
+  credential: RegistryCredentialSummary | null;
+  hosts: HostSummary[];
+  onClose: () => void;
+}) {
+  const save = useSaveRegistry();
+  const toast = useToast();
+  const [registry, setRegistry] = useState("");
+  const [username, setUsername] = useState("");
+  const [secret, setSecret] = useState("");
+  const [hostIds, setHostIds] = useState<string[]>([]);
+  const [enabled, setEnabled] = useState(true);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setRegistry(credential?.registry ?? "");
+    setUsername(credential?.username ?? "");
+    setSecret("");
+    setHostIds(credential?.hostIds ?? []);
+    setEnabled(credential?.enabled ?? true);
+    setFormError(null);
+    save.reset();
+    // Mutation objects are stable for the lifetime of this dialog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, credential]);
+
+  function toggleHost(id: string) {
+    setHostIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const trimmedRegistry = registry.trim();
+    const trimmedUsername = username.trim();
+    if (!trimmedRegistry) {
+      setFormError("Enter a registry such as ghcr.io or docker.io.");
+      return;
+    }
+    if (!trimmedUsername) {
+      setFormError("Enter the registry username.");
+      return;
+    }
+    if (!credential && !secret.trim()) {
+      setFormError("Enter a password or access token for this credential.");
+      return;
+    }
+    if (hostIds.length === 0) {
+      setFormError("Select at least one host.");
+      return;
+    }
+    const body: RegistryCredentialInput = {
+      registry: trimmedRegistry,
+      username: trimmedUsername,
+      hostIds,
+      enabled,
+      ...(secret.trim() ? { secret: secret.trim() } : {}),
+    };
+    try {
+      if (credential) {
+        await save.mutateAsync({ id: credential.id, body });
+        toast.success("Credential updated", `${trimmedRegistry} is saved for ${hostIds.length} host${hostIds.length === 1 ? "" : "s"}.`);
+      } else {
+        await save.mutateAsync({ body });
+        toast.success("Credential created", `${trimmedRegistry} now applies to ${hostIds.length} host${hostIds.length === 1 ? "" : "s"}.`);
+      }
+      setFormError(null);
+      onClose();
+    } catch (error) {
+      setFormError(errorMessage(error, "The credential could not be saved."));
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={credential ? "Edit registry credential" : "Add registry credential"}
+      wide
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" form="registry-form" variant="primary" loading={save.isPending}>Save credential</Button>
+        </>
+      }
+    >
+      <form id="registry-form" onSubmit={submit} style={{ display: "grid", gap: 16 }}>
+        {formError ? (
+          <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 11px", borderRadius: 9, border: "1px solid color-mix(in oklab, var(--danger) 35%, transparent)", background: "var(--danger-soft)", color: "var(--danger)", fontSize: 12 }}>
+            <AlertTriangle size={14} style={{ marginTop: 1, flex: "none" }} />
+            <span>{formError}</span>
+          </div>
+        ) : null}
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <div>
+            <label className="label" htmlFor="registry-host">Registry</label>
+            <Input
+              id="registry-host"
+              value={registry}
+              onChange={(event) => setRegistry(event.target.value)}
+              placeholder="ghcr.io"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <div className="help">Docker Hub, GHCR, or a self-hosted hostname with an optional port.</div>
+          </div>
+          <div>
+            <label className="label" htmlFor="registry-username">Username</label>
+            <Input
+              id="registry-username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="github-user"
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="registry-secret">Password or access token</label>
+          <Input
+            id="registry-secret"
+            type="password"
+            value={secret}
+            onChange={(event) => setSecret(event.target.value)}
+            autoComplete="new-password"
+            placeholder={credential ? "Saved. Leave blank to keep it." : "Personal access token with package read"}
+          />
+          <div className="help">Stored with the Cetus master key. The value is never sent back to the browser.</div>
+        </div>
+
+        <div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+            <span className="label" style={{ marginBottom: 0 }}>Hosts</span>
+            <span style={{ color: "var(--muted)", fontSize: 11 }}>{hostIds.length} selected</span>
+          </div>
+          {hosts.length === 0 ? (
+            <div className="help">No hosts are registered yet.</div>
+          ) : (
+            <div className="surface-soft" style={{ display: "grid", gap: 2, padding: "8px 10px", maxHeight: 220, overflow: "auto" }}>
+              {hosts.map((host) => (
+                <label
+                  key={host.id}
+                  style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 28, padding: "2px 3px", borderRadius: 6, cursor: "pointer" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={hostIds.includes(host.id)}
+                    onChange={() => toggleHost(host.id)}
+                    style={{ width: 13, height: 13, accentColor: "var(--accent)", flex: "none" }}
+                  />
+                  <span style={{ fontSize: 12.5, fontWeight: 550 }}>{host.name}</span>
+                  <Badge tone={host.kind === "local" ? "accent" : "default"}>{host.kind === "local" ? "Manager" : "Worker"}</Badge>
+                  <span className="mono" style={{ marginLeft: "auto", color: "var(--muted-2)", fontSize: 10 }}>{host.slug}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="help">The manager uses its own selection locally. Workers receive only credentials that target them.</div>
+        </div>
+
+        <SwitchRow
+          label="Enabled"
+          description="Pause the credential without deleting it. Paused credentials are removed from host configs."
+          checked={enabled}
+          onChange={setEnabled}
+        />
       </form>
     </Dialog>
   );

@@ -42,6 +42,10 @@ async function localDigests(imageRef: string, containerId: string | null): Promi
 const remoteCache = new Map<string, { at: number; value: { digest: string | null; error?: string } }>();
 const REMOTE_CACHE_TTL_MS = 10 * 60 * 1_000;
 
+export function clearRemoteDigestCache() {
+  remoteCache.clear();
+}
+
 async function remoteDigest(imageRef: string): Promise<{ digest: string | null; error?: string }> {
   const cached = remoteCache.get(imageRef);
   if (cached && Date.now() - cached.at < REMOTE_CACHE_TTL_MS) return cached.value;

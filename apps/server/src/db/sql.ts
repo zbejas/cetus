@@ -136,6 +136,17 @@ CREATE TABLE IF NOT EXISTS setting (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS registry_credential (
+  id TEXT PRIMARY KEY NOT NULL,
+  registry TEXT NOT NULL,
+  username TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  host_ids TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS registry_credential_registry_idx ON registry_credential(registry);
 CREATE TABLE IF NOT EXISTS user_preference (
   user_id TEXT PRIMARY KEY NOT NULL REFERENCES user(id) ON DELETE CASCADE,
   palette TEXT,

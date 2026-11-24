@@ -70,6 +70,28 @@ The Updates tab owns the fleet auto-update default. It stores `enabled`, `cron`,
 
 A stack with its own `autoUpdate` metadata ignores the fleet default. A stack without one inherits it. Open a stack's auto-update dialog to switch between the fleet schedule and a custom schedule, or to uncheck services such as `gluetun` so they keep their current image. The dashboard exposes the same default through the Schedule button next to Update all. See [Updates](updates.md) for inheritance, service selection, and rollback.
 
+## Registry credentials
+
+The Registries tab stores registry logins for image pulls and update checks on the manager and selected workers. Each credential has a registry host, username, password or access token, and one or more host targets.
+
+- Docker Hub, GHCR, and generic hostnames are accepted. Docker Hub aliases normalize to `https://index.docker.io/v1/`.
+- The secret is sealed with AES-256-GCM using the instance master key. API responses return only the registry, username, host targets, and timestamps.
+- Editing with an empty secret keeps the saved value. A new credential requires a secret.
+- An enabled credential may target each host once per registry. A second enabled credential for the same registry and host is rejected with `registry_host_conflict`.
+- Pausing a credential removes it from every host config without deleting the record.
+- Saving or deleting a credential rewrites the manager's Docker config, pushes a fresh config to connected workers, and clears the in-memory remote digest cache.
+
+The manager writes `<data>/docker/config.json` with mode `0600` and sets `DOCKER_CONFIG` for its own Docker commands. A worker writes the matching file under `<worker data>/docker/config.json`, also `0600`, and uses it until the manager sends a replacement. The file contains base64 credentials, not sealed values.
+
+| Method | Path | Scope | Behavior |
+|---|---|---|---|
+| `GET` | `/api/registries` | `settings:read` | List credentials without secrets |
+| `POST` | `/api/registries` | `settings:write` | Create a credential |
+| `PATCH` | `/api/registries/:id` | `settings:write` | Update registry, username, secret, hosts, or enabled state |
+| `DELETE` | `/api/registries/:id` | `settings:write` | Delete a credential |
+
+Instance-restricted API keys cannot manage registry credentials. Audit rows record `registry.create`, `registry.update`, and `registry.delete` with the registry and host targets, never the secret.
+
 ## Appearance
 
 Glacier is the built-in palette. The Appearance tab stores an optional per-user override in `user_preference.palette`, so each account can choose Abyss, Iris, Kelp, Glacier, Bloom, or Ember independently. Clearing the choice returns the account to Glacier.
@@ -186,6 +208,7 @@ The response includes `changed`, `reindexRequired`, and the normalized settings 
 - Changing the public URL updates links immediately, but the better-auth issuer is fixed at process start. Restart to apply it.
 - OIDC provider configuration is fixed at process start. Save the form, then restart the manager to apply it.
 - SMTP and notification channel changes apply immediately.
+- Registry credential changes rewrite the Docker config immediately. A worker that is offline receives the latest config on reconnect.
 - Allowed origins update Cetus origin checks immediately. Restart if a proxy or auth provider still rejects a new origin.
 - Port, bind address, data directory, database path, and secret files are bootstrap-only.
 - User passwords, API keys, hosts, stacks, operations, and audit rows already live in SQLite.

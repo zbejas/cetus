@@ -275,6 +275,32 @@ export interface BulkUpdateResult {
   skipped: { stackId: string; stackName: string; reason: string }[];
 }
 
+export interface RegistryCredentialHost {
+  id: string;
+  name: string;
+  kind: HostSummary["kind"];
+}
+
+export interface RegistryCredentialSummary {
+  id: string;
+  registry: string;
+  registryKey: string;
+  username: string;
+  hostIds: string[];
+  hosts: RegistryCredentialHost[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RegistryCredentialInput {
+  registry: string;
+  username: string;
+  secret?: string;
+  hostIds: string[];
+  enabled?: boolean;
+}
+
 export interface DockerInfo {
   serverVersion: string;
   apiVersion: string;
