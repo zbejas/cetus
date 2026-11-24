@@ -43,7 +43,7 @@ import {
   listRegistryCredentials,
   updateRegistryCredential,
 } from "../lib/registries.ts";
-import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext } from "../lib/autoUpdateState.ts";
+import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext, setAutoUpdateCooldown } from "../lib/autoUpdateState.ts";
 import { manualAutoUpdateConfig, resolveAutoUpdate } from "../lib/autoUpdateConfig.ts";
 import { readGlobalAutoUpdate } from "../lib/globalAutoUpdate.ts";
 import { startAutoUpdateScheduler, startBackupScheduler, startRetentionScheduler, startUpdateCheckScheduler } from "../lib/scheduler.ts";
@@ -71,9 +71,12 @@ import {
   getHostInventory,
   getHostRow,
   getHostSummary,
+  hostRowToSummary,
   listHosts,
   LOCAL_HOST_ID,
 } from "../lib/hosts.ts";
+import { isCetusWorkerStackName } from "../lib/cetusWorker.ts";
+import { isRateLimitError, pullRateLimitBackoffMinutes } from "../lib/rateLimit.ts";
 import {
   clearRemoteStackDeleting,
   createStack,
@@ -97,9 +100,10 @@ import {
   startAutoUpdateOperation,
   startComposeOperation,
   startDeleteOperation,
+  startWorkerSelfUpdateOperation,
 } from "../lib/operations.ts";
 import { initializeSelfInfo } from "../lib/selfInfo.ts";
-import { getStats } from "../lib/docker.ts";
+import { getStats, refreshStats, startStatsSampler } from "../lib/docker.ts";
 import {
   addPendingWorker,
   getRemoteHost,
@@ -1321,6 +1325,7 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
   if (message.type === "operation.finished") {
     const operation = getOperation(String(message.operationId));
     if (operation?.hostId !== hostId) return;
+    if (operation.status !== "running") return;
     const status = message.status === "success" ? "success" : "failed";
     finishOperation(String(message.operationId), status, typeof message.exitCode === "number" ? message.exitCode : null);
     if (operation?.stackId) {
@@ -1336,14 +1341,24 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
       }
       const autoState = readAutoUpdateState(operation.stackId);
       if (autoState.lastOperationId === operation.id) {
-        const autoStatus = typeof message.autoUpdateStatus === "string" ? message.autoUpdateStatus : status;
-        recordAutoUpdateRun(operation.stackId, autoStatus, operation.id);
-        const row = getStackRow(operation.stackId);
-        if (row) {
-          const autoConfig = resolveAutoUpdate(readMetadata(row), readGlobalAutoUpdate()).config;
-          refreshAutoUpdateNext(row.id, autoConfig);
-          if (autoStatus === "success") {
-            markAutoUpdateApplied(row.id, autoConfig?.services, autoConfig?.excludeServices);
+        if (message.rateLimited === true || isRateLimitError(operation.output ?? "")) {
+          setAutoUpdateCooldown(pullRateLimitBackoffMinutes());
+          recordAutoUpdateRun(operation.stackId, "rate-limited", operation.id);
+          const row = getStackRow(operation.stackId);
+          if (row) {
+            const autoConfig = resolveAutoUpdate(readMetadata(row), readGlobalAutoUpdate()).config;
+            refreshAutoUpdateNext(row.id, autoConfig);
+          }
+        } else {
+          const autoStatus = typeof message.autoUpdateStatus === "string" ? message.autoUpdateStatus : status;
+          recordAutoUpdateRun(operation.stackId, autoStatus, operation.id);
+          const row = getStackRow(operation.stackId);
+          if (row) {
+            const autoConfig = resolveAutoUpdate(readMetadata(row), readGlobalAutoUpdate()).config;
+            refreshAutoUpdateNext(row.id, autoConfig);
+            if (autoStatus === "success") {
+              markAutoUpdateApplied(row.id, autoConfig?.services, autoConfig?.excludeServices);
+            }
           }
         }
       }
@@ -1534,6 +1549,8 @@ async function handleMcp(request: Request) {
 export async function createApp() {
   await seedAdminFromEnvironment();
   await syncStacks();
+  await refreshStats();
+  startStatsSampler();
   await getHostInventory(LOCAL_HOST_ID);
   applyManagerRegistryConfig();
   await initializeSelfInfo();
@@ -1797,6 +1814,29 @@ export async function createApp() {
       const host = await getHostSummary(params.id);
       if (!host) throw new ApiError(404, "host_not_found", "Host not found.");
       return host;
+    })
+    .post("/api/hosts/:id/self-update", async ({ request, params }) => {
+      const actor = await actorForScope(request, "updates:apply");
+      assertTarget(actor, params.id, null);
+      const host = getHostRow(params.id);
+      if (!host) throw new ApiError(404, "host_not_found", "Host not found.");
+      if (host.kind !== "worker") throw new ApiError(422, "host_not_worker", "Only worker hosts can update their Cetus build this way.");
+      const summary = hostRowToSummary(host);
+      if (!summary.workerUpdateSupported) {
+        throw new ApiError(422, "worker_update_unsupported", "This worker is running an older Cetus build. Update it manually once to enable panel updates.");
+      }
+      if (!summary.workerUpdateAvailable) {
+        throw new ApiError(422, "worker_current", "This worker is already on the manager version.");
+      }
+      if (summary.status !== "online") {
+        throw new ApiError(422, "worker_offline", "This worker is offline. Start it before updating.");
+      }
+      const workerStack = db.select().from(schema.stack).where(eq(schema.stack.hostId, params.id)).all()
+        .find((row) => isCetusWorkerStackName(row.name, row.projectName));
+      if (!workerStack) {
+        throw new ApiError(422, "worker_stack_missing", "The worker Cetus stack is not indexed yet. Wait for the next worker snapshot.");
+      }
+      return startWorkerSelfUpdateOperation(workerStack, actor, request, { trigger: "manual" });
     })
     .get("/api/hosts/:id/inventory", async ({ request, params }) => {
       const actor = await actorForScope(request, "hosts:read");
@@ -2192,9 +2232,9 @@ export async function createApp() {
       recordAudit({ actor, action: "stack.restore", resourceType: "stack", resourceId: params.id, hostId: row.hostId, stackId: params.id, metadata: { file: params.file }, request });
       return detail;
     })
-    .get("/api/operations", async ({ request }) => {
+    .get("/api/operations", async ({ request, query }) => {
       const actor = await actorForScope(request, "stacks:read");
-      const operations = listOperations(60);
+      const operations = listOperations(60, query.compact === "1");
       if (actor.type !== "key") return operations;
       const restrictions = keyRestrictions(actor);
       return operations.filter((operation) => {

@@ -1,13 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { config } from "../config.ts";
 import type { Actor, AutoUpdateConfig, Operation, OperationType } from "@shared/types.ts";
 import { recordAudit } from "./security.ts";
-import { getHostRow } from "./hosts.ts";
+import { getHostRow, workerSelfUpdateSupported } from "./hosts.ts";
+import { isCetusWorkerStackName } from "./cetusWorker.ts";
 import { sendToWorker } from "./remote.ts";
 import {
   clearRemoteStackDeleting,
@@ -20,12 +21,20 @@ import {
   snapshotCurrent,
 } from "./stacks.ts";
 import { runAutoUpdate } from "./autoUpdateRunner.ts";
-import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext } from "./autoUpdateState.ts";
+import { readAutoUpdateState, recordAutoUpdateRun, refreshAutoUpdateNext, setAutoUpdateCooldown } from "./autoUpdateState.ts";
+import { pullRateLimitBackoffMinutes } from "./rateLimit.ts";
 import { manualAutoUpdateConfig, resolveAutoUpdate } from "./autoUpdateConfig.ts";
 import { readGlobalAutoUpdate } from "./globalAutoUpdate.ts";
 import { markAutoUpdateApplied } from "./updateCheckState.ts";
 import { notifyEvent } from "./notifications.ts";
 import { getSelfInfo, isSelfUpdateTarget } from "./selfInfo.ts";
+import { refreshManagerRegistryConfig } from "./registries.ts";
+import {
+  buildSelfUpdateScript,
+  removeSelfUpdateTag,
+  selfUpdateBackupTag,
+  startSelfUpdateHelper,
+} from "./selfUpdate.ts";
 
 const buffers = new Map<string, string>();
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -53,8 +62,35 @@ export function getOperation(id: string): Operation | null {
   return operationToJson(buffered ? { ...row, output: `${row.output}${buffered}` } : row);
 }
 
-export function listOperations(limit = 50): Operation[] {
-  return db.select().from(schema.operation).orderBy(desc(schema.operation.startedAt)).limit(limit).all().map(operationToJson);
+export function listOperations(limit = 50, compact = false): Operation[] {
+  if (!compact) {
+    return db.select().from(schema.operation).orderBy(desc(schema.operation.startedAt)).limit(limit).all().map(operationToJson);
+  }
+  const rows = db.select({
+    id: schema.operation.id,
+    type: schema.operation.type,
+    status: schema.operation.status,
+    stackId: schema.operation.stackId,
+    stackName: schema.operation.stackName,
+    hostId: schema.operation.hostId,
+    actorName: schema.operation.actorName,
+    exitCode: schema.operation.exitCode,
+    startedAt: schema.operation.startedAt,
+    finishedAt: schema.operation.finishedAt,
+  }).from(schema.operation).orderBy(desc(schema.operation.startedAt)).limit(limit).all();
+  return rows.map((row) => ({
+    id: row.id,
+    type: row.type as OperationType,
+    status: row.status,
+    stackId: row.stackId,
+    stackName: row.stackName,
+    hostId: row.hostId,
+    actorName: row.actorName,
+    output: "",
+    exitCode: row.exitCode,
+    startedAt: row.startedAt.toISOString(),
+    finishedAt: row.finishedAt?.toISOString() ?? null,
+  }));
 }
 
 export function createOperation(input: {
@@ -142,66 +178,8 @@ export async function refreshStackAfterOperation(stackId: string, deployed: bool
   }).where(eq(schema.stack.id, stackId)).run();
 }
 
-function shellQuote(value: string) {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
 function selfUpdateKey(operationId: string) {
   return `selfupdate:${operationId}`;
-}
-
-function removeSelfUpdateTag(tag: string | undefined) {
-  if (!tag) return;
-  Bun.spawnSync(["docker", "rmi", tag], { stdout: "pipe", stderr: "pipe" });
-}
-
-function buildSelfUpdateScript(input: {
-  operationId: string;
-  dir: string;
-  projectName: string;
-  serviceName: string;
-  imageRef: string;
-  backupTag: string;
-  statusFile: string;
-  logFile: string;
-  services?: string[];
-  healthGraceSeconds: number;
-}) {
-  const quote = shellQuote;
-  const pullTargets = input.services?.length ? ` ${input.services.map(quote).join(" ")}` : "";
-  return `set -u
-OUT=${quote(input.logFile)}
-STATUS=${quote(input.statusFile)}
-: > "$OUT"
-finish() {
-  code=$1
-  status=$2
-  printf '{"operationId":"${input.operationId}","status":"%s","exitCode":%s}\\n' "$status" "$code" > "$STATUS"
-  exit "$code"
-}
-cd ${quote(input.dir)} >> "$OUT" 2>&1 || finish 1 failed
-docker compose -p ${quote(input.projectName)} pull${pullTargets} >> "$OUT" 2>&1 || finish $? failed
-docker compose -p ${quote(input.projectName)} up -d --remove-orphans >> "$OUT" 2>&1 || {
-  echo "[cetus] compose up failed. Restoring the previous image." >> "$OUT"
-  docker tag ${quote(input.backupTag)} ${quote(input.imageRef)} >> "$OUT" 2>&1 || true
-  docker compose -p ${quote(input.projectName)} up -d --force-recreate >> "$OUT" 2>&1 || true
-  finish 1 failed
-}
-for i in $(seq 1 ${Math.max(10, Math.min(input.healthGraceSeconds, 600))}); do
-  cid=$(docker compose -p ${quote(input.projectName)} ps -q ${quote(input.serviceName)} 2>/dev/null | head -n 1)
-  if [ -n "$cid" ]; then
-    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)
-    if [ "$health" = "healthy" ] || [ "$health" = "running" ]; then
-      finish 0 success
-    fi
-  fi
-  sleep 1
-done
-echo "[cetus] New container did not become healthy. Restoring the previous image." >> "$OUT"
-docker tag ${quote(input.backupTag)} ${quote(input.imageRef)} >> "$OUT" 2>&1 || true
-docker compose -p ${quote(input.projectName)} up -d --force-recreate >> "$OUT" 2>&1 || true
-finish 1 failed
-`;
 }
 
 function startSelfUpdateOperation(
@@ -247,20 +225,9 @@ function startSelfUpdateOperation(
   const statusFile = path.join(config.operationsDir, `self-update-${operation.id}.json`);
   const logFile = path.join(config.operationsDir, `self-update-${operation.id}.log`);
   const helperName = `cetus-self-update-${operation.id}`;
-  const backupTag = `cetus-self-update:${operation.id}`;
+  const backupTag = selfUpdateBackupTag(operation.id);
   const settingKey = selfUpdateKey(operation.id);
-
-  const backup = Bun.spawnSync(["docker", "tag", self.imageRef, backupTag], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (backup.exitCode !== 0) {
-    const error = backup.stderr.toString().trim() || backup.stdout.toString().trim() || "Docker could not save a rollback tag.";
-    appendOutput(operation.id, `[cetus] Self-update could not save the current image: ${error}\n`);
-    finishOperation(operation.id, "failed", 1);
-    if (options.trackAutoUpdate) recordAutoUpdateRun(stackRow.id, "failed", operation.id);
-    return operation;
-  }
+  refreshManagerRegistryConfig();
 
   const meta = {
     operationId: operation.id,
@@ -280,23 +247,18 @@ function startSelfUpdateOperation(
     .run();
 
   const dockerConfig = process.env.DOCKER_CONFIG ?? path.join(config.dataDir, "docker");
-  const result = Bun.spawnSync([
-    "docker",
-    "run",
-    "--rm",
-    "-d",
-    "--name",
+  const composeEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key, value]) => key.startsWith("CETUS_") && value !== undefined) as Array<[string, string]>,
+  );
+  const result = startSelfUpdateHelper({
     helperName,
-    "--volumes-from",
-    self.containerId,
-    "-e",
-    `DOCKER_CONFIG=${dockerConfig}`,
-    "--entrypoint",
-    "sh",
-    self.imageRef,
-    "-lc",
-    buildSelfUpdateScript({
+    containerId: self.containerId,
+    imageRef: self.imageRef,
+    dockerConfig,
+    env: composeEnv,
+    script: buildSelfUpdateScript({
       operationId: operation.id,
+      containerId: self.containerId,
       dir: stackRow.dir,
       projectName: stackRow.projectName,
       serviceName: self.service,
@@ -307,15 +269,11 @@ function startSelfUpdateOperation(
       services: options.config?.services,
       healthGraceSeconds: options.config?.healthGraceSeconds ?? 90,
     }),
-  ], {
-    stdout: "pipe",
-    stderr: "pipe",
   });
 
-  if (result.exitCode !== 0) {
+  if (!result.ok) {
     db.delete(schema.setting).where(eq(schema.setting.key, settingKey)).run();
-    const error = result.stderr.toString().trim() || result.stdout.toString().trim() || "The helper container did not start.";
-    appendOutput(operation.id, `[cetus] Self-update helper failed to start: ${error}\n`);
+    appendOutput(operation.id, `[cetus] Self-update helper failed to start: ${result.error}\n`);
     finishOperation(operation.id, "failed", 1);
     removeSelfUpdateTag(backupTag);
     if (options.trackAutoUpdate) recordAutoUpdateRun(stackRow.id, "failed", operation.id);
@@ -323,6 +281,69 @@ function startSelfUpdateOperation(
     appendOutput(
       operation.id,
       "[cetus] Cetus is running in this stack. The update continues in a detached helper container so recreating the manager does not interrupt it.\n",
+    );
+  }
+  return operation;
+}
+
+export function startWorkerSelfUpdateOperation(
+  stackRow: NonNullable<ReturnType<typeof getStackRow>>,
+  actor: Actor,
+  request?: Request,
+  options: { trigger?: "schedule" | "manual" | "bulk"; config?: AutoUpdateConfig; trackAutoUpdate?: boolean } = {},
+): Operation {
+  const owner = getHostRow(stackRow.hostId);
+  if (owner?.kind !== "worker") throw new Error("The worker stack does not belong to a worker host.");
+  if (!workerSelfUpdateSupported(stackRow.hostId)) {
+    throw new Error("This worker is running an older Cetus build. Update it manually once before using panel updates.");
+  }
+  const running = db.select().from(schema.operation).where(and(
+    eq(schema.operation.stackId, stackRow.id),
+    eq(schema.operation.status, "running"),
+  )).get();
+  if (running) throw new Error("Another operation is already running for this stack.");
+
+  const operation = createOperation({
+    type: "update",
+    hostId: stackRow.hostId,
+    stackId: stackRow.id,
+    stackName: stackRow.name,
+    actor,
+  });
+  if (options.trackAutoUpdate) recordAutoUpdateRun(stackRow.id, "running", operation.id);
+  recordAudit({
+    actor,
+    action: options.trackAutoUpdate ? "stack.auto-update" : "worker.self-update",
+    resourceType: options.trackAutoUpdate ? "stack" : "host",
+    resourceId: options.trackAutoUpdate ? stackRow.id : stackRow.hostId,
+    hostId: stackRow.hostId,
+    stackId: stackRow.id,
+    metadata: {
+      operationId: operation.id,
+      trigger: options.trigger ?? "manual",
+      targetVersion: config.version,
+      ...(options.config ? { cron: options.config.cron, timezone: options.config.timezone } : {}),
+    },
+    request,
+  });
+
+  const sent = sendToWorker(stackRow.hostId, {
+    type: "worker.self-update",
+    operationId: operation.id,
+    stackName: stackRow.name,
+    projectName: stackRow.projectName,
+    composeFile: stackRow.composeFile,
+    config: options.config ?? {},
+    targetVersion: config.version,
+  });
+  if (!sent) {
+    appendOutput(operation.id, "[cetus] Worker is not connected.\n");
+    finishOperation(operation.id, "failed", 1);
+    if (options.trackAutoUpdate) recordAutoUpdateRun(stackRow.id, "failed", operation.id);
+  } else {
+    appendOutput(
+      operation.id,
+      "[cetus] Worker update continues in a detached helper container on the worker host. The worker reconnects when the new container is healthy.\n",
     );
   }
   return operation;
@@ -420,6 +441,25 @@ async function reconcileSelfUpdatesOnce() {
     fs.rmSync(meta.statusFile, { force: true });
     fs.rmSync(meta.logFile, { force: true });
   }
+
+  const staleCutoff = new Date(Date.now() - 20 * 60 * 1_000);
+  const stale = db.select().from(schema.operation).where(and(
+    eq(schema.operation.type, "update"),
+    eq(schema.operation.status, "running"),
+    lt(schema.operation.startedAt, staleCutoff),
+  )).all();
+  for (const operation of stale) {
+    const stackRow = operation.stackId ? getStackRow(operation.stackId) : null;
+    if (!stackRow || !isCetusWorkerStackName(stackRow.name, stackRow.projectName)) continue;
+    const host = operation.hostId ? getHostRow(operation.hostId) : null;
+    if (host?.status === "online") continue;
+    appendOutput(operation.id, "\n[cetus] Worker did not report back after the update. Marking the operation failed.\n");
+    finishOperation(operation.id, "failed", 1);
+    const autoState = readAutoUpdateState(stackRow.id);
+    if (autoState.lastOperationId === operation.id) {
+      recordAutoUpdateRun(stackRow.id, "failed", operation.id);
+    }
+  }
 }
 
 export interface ComposeOperationInput {
@@ -439,6 +479,9 @@ export function startComposeOperation(input: ComposeOperationInput): Operation {
   const owner = getHostRow(stackRow.hostId);
   if (input.type === "update" && isSelfUpdateTarget(stackRow)) {
     return startSelfUpdateOperation(stackRow, input.actor, input.request, { trigger: "manual" });
+  }
+  if (input.type === "update" && owner?.kind === "worker" && isCetusWorkerStackName(stackRow.name, stackRow.projectName)) {
+    return startWorkerSelfUpdateOperation(stackRow, input.actor, input.request, { trigger: "manual" });
   }
   if (owner?.kind !== "worker" && ["deploy", "update", "down"].includes(input.type)) {
     try {
@@ -559,6 +602,14 @@ export function startAutoUpdateOperation(
       trackAutoUpdate: true,
     });
   }
+  const owner = getHostRow(stackRow.hostId);
+  if (isCetusWorkerStackName(stackRow.name, stackRow.projectName) && owner?.kind === "worker") {
+    return startWorkerSelfUpdateOperation(stackRow, actor, request, {
+      trigger: options.trigger ?? "manual",
+      config,
+      trackAutoUpdate: true,
+    });
+  }
   const running = db.select().from(schema.operation).where(and(
     eq(schema.operation.stackId, stackId),
     eq(schema.operation.status, "running"),
@@ -590,7 +641,6 @@ export function startAutoUpdateOperation(
     request,
   });
 
-  const owner = getHostRow(stackRow.hostId);
   if (owner?.kind === "worker") {
     const sent = sendToWorker(stackRow.hostId, {
       type: "auto-update",
@@ -613,6 +663,7 @@ export function startAutoUpdateOperation(
   } catch (error) {
     console.error("[cetus] snapshot before auto-update failed", error);
   }
+  refreshManagerRegistryConfig();
 
   void (async () => {
     try {
@@ -627,9 +678,21 @@ export function startAutoUpdateOperation(
         },
         (chunk) => appendOutput(operation.id, chunk),
       );
+      if (result.rateLimited) {
+        appendOutput(
+          operation.id,
+          `\n[cetus] Registry pull limit reached. Scheduled updates pause for ${pullRateLimitBackoffMinutes()} minutes.\n`,
+        );
+      }
       finishOperation(operation.id, result.status === "success" ? "success" : "failed", result.status === "success" ? 0 : 1);
-      recordAutoUpdateRun(stackRow.id, result.status, operation.id);
-      refreshAutoUpdateNext(stackRow.id, config);
+      if (result.rateLimited) {
+        setAutoUpdateCooldown(pullRateLimitBackoffMinutes());
+        recordAutoUpdateRun(stackRow.id, "rate-limited", operation.id);
+        refreshAutoUpdateNext(stackRow.id, config);
+      } else {
+        recordAutoUpdateRun(stackRow.id, result.status, operation.id);
+        refreshAutoUpdateNext(stackRow.id, config);
+      }
       await refreshStackAfterOperation(stackRow.id, result.status === "success");
       if (result.status === "success") {
         markAutoUpdateApplied(stackRow.id, config.services, config.excludeServices);
@@ -638,6 +701,7 @@ export function startAutoUpdateOperation(
       appendOutput(operation.id, `[cetus] ${error instanceof Error ? error.message : String(error)}\n`);
       finishOperation(operation.id, "failed", 1);
       recordAutoUpdateRun(stackRow.id, "failed", operation.id);
+      refreshAutoUpdateNext(stackRow.id, config);
     }
   })();
 

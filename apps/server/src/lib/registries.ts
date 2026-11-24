@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import type { RegistryCredentialInput, RegistryCredentialSummary } from "@shared/types.ts";
@@ -11,6 +10,7 @@ import { openSecret, sealSecret } from "./secrets.ts";
 import { LOCAL_HOST_ID } from "./hosts.ts";
 import { listRemoteHosts, sendToWorker } from "./remote.ts";
 import { clearRemoteDigestCache } from "./updateCheck.ts";
+import { mergeDockerConfig, readAmbientDockerConfig, writeDockerConfig } from "./dockerConfig.ts";
 
 type RegistryRow = typeof schema.registryCredential.$inferSelect;
 
@@ -143,13 +143,16 @@ export function dockerConfigJsonForHost(hostId: string) {
 
 export function applyManagerRegistryConfig() {
   const dir = path.join(config.dataDir, "docker");
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = path.join(dir, "config.json");
-  const temp = path.join(dir, `.config.${process.pid}.${crypto.randomUUID()}.tmp`);
-  fs.writeFileSync(temp, dockerConfigJsonForHost(LOCAL_HOST_ID), { mode: 0o600 });
-  fs.renameSync(temp, file);
-  fs.chmodSync(file, 0o600);
-  process.env.DOCKER_CONFIG = dir;
+  const managed = buildDockerConfigForHost(LOCAL_HOST_ID);
+  writeDockerConfig(dir, mergeDockerConfig(readAmbientDockerConfig(dir), managed));
+}
+
+export function refreshManagerRegistryConfig() {
+  try {
+    applyManagerRegistryConfig();
+  } catch (error) {
+    console.error("[cetus] could not refresh the Docker registry config", error);
+  }
 }
 
 export function sendRegistryAuthToWorker(hostId: string) {

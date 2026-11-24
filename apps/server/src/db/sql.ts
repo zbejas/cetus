@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS session (
   user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS session_user_idx ON session(user_id);
+CREATE INDEX IF NOT EXISTS session_expires_idx ON session(expires_at);
 CREATE TABLE IF NOT EXISTS account (
   id TEXT PRIMARY KEY NOT NULL,
   account_id TEXT NOT NULL,
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS verification (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification(identifier);
 CREATE TABLE IF NOT EXISTS host (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL,
@@ -84,6 +86,7 @@ CREATE TABLE IF NOT EXISTS stack (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS stack_host_name_idx ON stack(host_id, name);
 CREATE INDEX IF NOT EXISTS stack_host_idx ON stack(host_id);
+CREATE INDEX IF NOT EXISTS stack_host_status_idx ON stack(host_id, status);
 CREATE TABLE IF NOT EXISTS operation (
   id TEXT PRIMARY KEY NOT NULL,
   type TEXT NOT NULL,
@@ -100,6 +103,9 @@ CREATE TABLE IF NOT EXISTS operation (
   finished_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS operation_stack_idx ON operation(stack_id);
+CREATE INDEX IF NOT EXISTS operation_stack_status_idx ON operation(stack_id, status);
+CREATE INDEX IF NOT EXISTS operation_status_idx ON operation(status);
+CREATE INDEX IF NOT EXISTS operation_started_idx ON operation(started_at);
 CREATE TABLE IF NOT EXISTS audit_log (
   id TEXT PRIMARY KEY NOT NULL,
   actor_type TEXT NOT NULL,
@@ -117,6 +123,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_log(created_at);
 CREATE INDEX IF NOT EXISTS audit_stack_idx ON audit_log(stack_id);
+CREATE INDEX IF NOT EXISTS audit_stack_created_idx ON audit_log(stack_id, created_at);
 CREATE TABLE IF NOT EXISTS api_key (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL,
@@ -184,6 +191,7 @@ CREATE TABLE IF NOT EXISTS notification_delivery (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notification_delivery_channel_idx ON notification_delivery(channel_id);
+CREATE INDEX IF NOT EXISTS notification_delivery_created_idx ON notification_delivery(created_at);
 CREATE TABLE IF NOT EXISTS backup (
   id TEXT PRIMARY KEY NOT NULL,
   filename TEXT NOT NULL,

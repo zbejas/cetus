@@ -2564,11 +2564,29 @@ a {
 }
 
 .host-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px;
   transition: border-color 150ms ease, transform 150ms ease, background 150ms ease;
+}
+
+.host-card-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+}
+
+.host-card-overlay:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.host-card-action {
+  position: relative;
+  z-index: 2;
 }
 
 .host-card:hover {

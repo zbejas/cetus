@@ -49,6 +49,19 @@ export function useHost(id: string) {
   return useQuery({ queryKey: queryKeys.host(id), queryFn: () => api.host(id), enabled: Boolean(id) });
 }
 
+export function useUpdateWorker() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.updateWorker,
+    onSuccess: (operation) => {
+      client.invalidateQueries({ queryKey: queryKeys.hosts });
+      client.invalidateQueries({ queryKey: queryKeys.host(operation.hostId ?? "") });
+      client.invalidateQueries({ queryKey: queryKeys.operations });
+      client.invalidateQueries({ queryKey: ["audit"] });
+    },
+  });
+}
+
 export function useInventory(id: string) {
   return useQuery({ queryKey: queryKeys.inventory(id), queryFn: () => api.inventory(id), enabled: Boolean(id), refetchInterval: 12_000 });
 }

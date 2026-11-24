@@ -493,9 +493,10 @@ function HostRow({ host, first }: { host: HostSummary; first: boolean }) {
             </Badge>
             <span className="chip">{titleCase(host.kind)}</span>
             <span style={{ color: "var(--muted)", fontSize: 11 }}>{host.os ?? "OS unavailable"}</span>
+            {host.workerUpdateAvailable ? <Badge tone="warn">Update</Badge> : null}
           </div>
           <div style={{ marginTop: 2, color: "var(--muted)", fontSize: 11 }}>
-            {docker} · {host.stackCount} stack{host.stackCount === 1 ? "" : "s"} · {host.runningStacks} running · {host.containerCount} containers · {host.imageCount} images
+            {docker} · Cetus {host.cetusVersion ?? "version n/a"} · {host.stackCount} stack{host.stackCount === 1 ? "" : "s"} · {host.runningStacks} running · {host.containerCount} containers · {host.imageCount} images
           </div>
         </div>
         <Link to="/hosts/$hostId" params={{ hostId: host.id }} className="btn btn-ghost btn-sm">

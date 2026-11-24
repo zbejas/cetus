@@ -120,26 +120,39 @@ export async function getDockerInfo(): Promise<DockerInfo | null> {
   }
 }
 
-export async function listContainers(): Promise<DockerContainer[]> {
-  const result = await docker(["ps", "-a", "--no-trunc", "--format", "{{json .}}"], { timeoutMs: 15_000 });
-  if (result.exitCode !== 0) return [];
-  return parseJsonLines<Record<string, any>>(result.stdout).map((row) => {
-    const labels = parseLabels(row.Labels);
-    return {
-      id: row.ID ?? "",
-      names: row.Names ?? "",
-      image: row.Image ?? "",
-      state: row.State ?? "unknown",
-      status: row.Status ?? "",
-      ports: row.Ports ?? "",
-      createdAt: row.CreatedAt ?? "",
-      runningFor: row.RunningFor ?? "",
-      labels,
-      project: labels["com.docker.compose.project"] ?? null,
-      service: labels["com.docker.compose.service"] ?? null,
-      unmanaged: !labels["com.docker.compose.project"],
-    };
-  });
+let containersCache: { at: number; value: Promise<DockerContainer[]> } | null = null;
+
+export function invalidateContainerCache() {
+  containersCache = null;
+}
+
+export async function listContainers(force = false): Promise<DockerContainer[]> {
+  if (!force && containersCache && Date.now() - containersCache.at < 1_500) {
+    return containersCache.value;
+  }
+  const value = (async () => {
+    const result = await docker(["ps", "-a", "--no-trunc", "--format", "{{json .}}"], { timeoutMs: 15_000 });
+    if (result.exitCode !== 0) return [];
+    return parseJsonLines<Record<string, any>>(result.stdout).map((row) => {
+      const labels = parseLabels(row.Labels);
+      return {
+        id: row.ID ?? "",
+        names: row.Names ?? "",
+        image: row.Image ?? "",
+        state: row.State ?? "unknown",
+        status: row.Status ?? "",
+        ports: row.Ports ?? "",
+        createdAt: row.CreatedAt ?? "",
+        runningFor: row.RunningFor ?? "",
+        labels,
+        project: labels["com.docker.compose.project"] ?? null,
+        service: labels["com.docker.compose.service"] ?? null,
+        unmanaged: !labels["com.docker.compose.project"],
+      };
+    });
+  })();
+  containersCache = { at: Date.now(), value };
+  return value;
 }
 
 export async function listImages(): Promise<DockerImage[]> {
@@ -218,26 +231,51 @@ function parseDf(output: string) {
   };
 }
 
-let statsCache: { at: number; map: Map<string, { cpu: number; memoryUsed: number; memoryLimit: number }> } | null = null;
+type StatsMap = Map<string, { cpu: number; memoryUsed: number; memoryLimit: number }>;
 
-export async function getStats(): Promise<Map<string, { cpu: number; memoryUsed: number; memoryLimit: number }>> {
-  if (statsCache && Date.now() - statsCache.at < 3_000) return statsCache.map;
-  const result = await docker(["stats", "--no-stream", "--format", "{{json .}}"], { timeoutMs: 15_000 });
-  const map = new Map<string, { cpu: number; memoryUsed: number; memoryLimit: number }>();
-  if (result.exitCode !== 0) return map;
-  for (const row of parseJsonLines<Record<string, any>>(result.stdout)) {
-    const name = row.Name ?? row.Container ?? "";
-    if (!name) continue;
-    const cpu = Number.parseFloat(String(row.CPUPerc ?? "0").replace("%", "")) || 0;
-    const [usedRaw, limitRaw] = String(row.MemUsage ?? "0B / 0B").split(" / ");
-    map.set(name, {
-      cpu,
-      memoryUsed: parseBytes(usedRaw),
-      memoryLimit: parseBytes(limitRaw),
-    });
-  }
-  statsCache = { at: Date.now(), map };
-  return map;
+let statsCache: { at: number; map: StatsMap } | null = null;
+let statsRefresh: Promise<void> | null = null;
+let statsTimer: ReturnType<typeof setInterval> | null = null;
+
+export async function refreshStats(): Promise<void> {
+  if (statsRefresh) return statsRefresh;
+  statsRefresh = (async () => {
+    try {
+      const result = await docker(["stats", "--no-stream", "--format", "{{json .}}"], { timeoutMs: 15_000 });
+      if (result.exitCode !== 0) return;
+      const map: StatsMap = new Map();
+      for (const row of parseJsonLines<Record<string, any>>(result.stdout)) {
+        const name = row.Name ?? row.Container ?? "";
+        if (!name) continue;
+        const cpu = Number.parseFloat(String(row.CPUPerc ?? "0").replace("%", "")) || 0;
+        const [usedRaw, limitRaw] = String(row.MemUsage ?? "0B / 0B").split(" / ");
+        map.set(name, {
+          cpu,
+          memoryUsed: parseBytes(usedRaw),
+          memoryLimit: parseBytes(limitRaw),
+        });
+      }
+      statsCache = { at: Date.now(), map };
+    } finally {
+      statsRefresh = null;
+    }
+  })();
+  return statsRefresh;
+}
+
+export function startStatsSampler(intervalMs = 5_000) {
+  if (statsTimer) return;
+  void refreshStats();
+  statsTimer = setInterval(() => {
+    void refreshStats();
+  }, intervalMs);
+  statsTimer.unref?.();
+}
+
+export async function getStats(): Promise<StatsMap> {
+  if (statsCache && Date.now() - statsCache.at < 15_000) return statsCache.map;
+  void refreshStats();
+  return statsCache?.map ?? new Map();
 }
 
 export function parseBytes(value: string | undefined): number {

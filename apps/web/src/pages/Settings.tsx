@@ -1526,8 +1526,9 @@ function UpdatesTab() {
             Default schedule: <strong>{scheduleLabel(config)}</strong>
           </p>
           <p className="help" style={{ margin: 0, maxWidth: "88ch" }}>
-            Stacks without a custom schedule inherit this default. Open a stack's auto-update dialog to give it its own
-            schedule, or uncheck services such as gluetun so they keep their current image.
+            Stacks without a custom schedule inherit this default. Cetus only pulls services with a changed digest. Open
+            a stack's auto-update dialog to give it its own schedule, or uncheck services such as gluetun so they keep
+            their current image.
           </p>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
             <span className="chip">Health gate {config.healthCheck === false ? "off" : "on"}</span>

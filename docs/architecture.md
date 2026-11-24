@@ -20,6 +20,9 @@ Run one manager per SQLite database. The schedulers and worker registry are in-p
 | `apps/server/src/lib/docker.ts` | Docker CLI and Compose helpers, inventory, stats, log reads |
 | `apps/server/src/lib/stacks.ts` | Stack scan, compose and metadata reads and writes, validation, snapshots |
 | `apps/server/src/lib/operations.ts` | Operation lifecycle, compose actions, output capture, notification dispatch |
+| `apps/server/src/lib/selfContainer.ts` | Container identity lookup used by manager and worker self-update |
+| `apps/server/src/lib/selfUpdate.ts` | Detached self-update helper script, rollback tag, and helper launch |
+| `apps/server/src/lib/registries.ts` | Per-host registry credentials and Docker config generation |
 | `apps/server/src/lib/remote.ts` | Worker registry, command correlation, remote logs, remote update checks |
 | `apps/server/src/lib/hosts.ts` | Local and remote host summaries, inventory merge |
 | `apps/server/src/lib/security.ts` | Actor resolution, API key verification, scope checks, audit writes |
@@ -124,6 +127,15 @@ Most API requests resolve an actor from a session cookie or an API key, check th
 
 The Compose files are the source of truth for YAML. SQLite is an index and control-plane state, not a second copy of the files. A remote worker's disk is the source of truth for its stacks; the manager keeps the last snapshot.
 
+### SQLite and hot paths
+
+- WAL mode, `synchronous=NORMAL`, a 5-second busy timeout, a 32 MB page cache, a 128 MB mmap window, memory temp storage, and a 64 MB WAL size limit.
+- `PRAGMA optimize` runs at startup and after the daily retention delete. `PRAGMA wal_checkpoint(PASSIVE)` follows the retention delete.
+- Indexes cover the query shapes that grow with fleet size: stack host and status counts, operation stack/status and start time, audit stack and time, notification delivery time, session expiry, and verification identifiers.
+- `listStacks` reads one `docker ps -a` snapshot and reuses it for every stack. It skips `docker stats`. Stack detail reads container stats only for the stack being viewed.
+- Update-check rows are read with a primary-key range on the `setting` table instead of scanning every setting.
+- The operations list is compact by default in the browser: it omits retained output, and the Activity dialog fetches the full output for the selected operation.
+
 ### Auth and scopes
 
 - Browser sessions use better-auth cookies. Public email sign-up is disabled; admins create users or one-time invites.
@@ -141,8 +153,9 @@ Enrollment tokens expire after 15 minutes and are single use. Reconnects use the
 ### Background work
 
 - The update-check sweep runs 15 seconds after boot and then every six hours. It skips stacks checked in the last hour and stacks currently updating.
-- The auto-update scheduler ticks every 30 seconds, resolves the fleet default from `settings.autoUpdate` against each stack's override, evaluates the cron expression in its configured timezone, and refuses to start a second operation while one is running.
-- Cetus worker stacks are hidden from fleet lists, update sweeps, and bulk updates so Cetus never manages the container that runs Cetus.
+- The auto-update scheduler ticks every 15 seconds, resolves the fleet default from `settings.autoUpdate` against each stack's override, evaluates the cron expression in its configured timezone, and queues due stacks. At most `CETUS_AUTO_UPDATE_CONCURRENCY` operations run at once. Scheduled runs skip stacks with no pending digest update and pull only changed services.
+- A registry rate-limit failure pauses scheduled starts for `CETUS_PULL_RATE_LIMIT_BACKOFF_MINUTES` (default six hours).
+- Cetus worker stacks are hidden from fleet lists, update sweeps, and bulk updates, but the scheduler can send a detached `worker.self-update` when the worker supports it and its version is older than the manager.
 - Auto-updates run the health gate and roll back to the previous compose file and image ids on failure. See [Updates](updates.md).
 - The backup scheduler ticks every minute, runs a daily backup at `CETUS_BACKUP_CRON`, and prunes older archives to `CETUS_BACKUP_KEEP`. See [Backups](backups.md).
 - The retention job runs daily and deletes audit rows older than `CETUS_AUDIT_RETENTION_DAYS` and notification deliveries older than `CETUS_NOTIFICATION_RETENTION_DAYS`.

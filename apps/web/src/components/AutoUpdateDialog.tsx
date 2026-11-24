@@ -222,7 +222,7 @@ export function AutoUpdateDialog({
               <label className="field">
                 <span className="label">Cron</span>
                 <Input className="mono" value={cron} onChange={(event) => setCron(event.target.value)} placeholder="0 4 * * *" />
-                {cronError ? <span className="help" style={{ color: "var(--danger)" }}>{cronError}</span> : <span className="help">Minute hour day month weekday. Server timezone handling follows the value above.</span>}
+                {cronError ? <span className="help" style={{ color: "var(--danger)" }}>{cronError}</span> : <span className="help">Minute hour day month weekday. Server timezone handling follows the value above. For example, 0 */6 * * * runs every six hours.</span>}
               </label>
             ) : null}
 

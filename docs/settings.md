@@ -24,6 +24,8 @@ These are the only values that must be set outside the database:
 | `CETUS_BACKUP_TIMEZONE` | server timezone | Timezone for the backup cron |
 | `CETUS_BACKUP_KEEP` | `11` | Complete backups to retain |
 | `CETUS_UPDATE_CHECK_ENABLED` | `true` | Set `false` to disable registry update sweeps |
+| `CETUS_AUTO_UPDATE_CONCURRENCY` | `2` | Maximum auto-update operations running at once, clamped to 1-8 |
+| `CETUS_PULL_RATE_LIMIT_BACKOFF_MINUTES` | `360` | Pause scheduled auto-updates after a registry pull rate limit, clamped to 5-1440 |
 | `CETUS_AUDIT_RETENTION_DAYS` | `90` | Audit rows older than this are pruned daily |
 | `CETUS_NOTIFICATION_RETENTION_DAYS` | `30` | Notification delivery rows older than this are pruned daily |
 
@@ -81,7 +83,7 @@ The Registries tab stores registry logins for image pulls and update checks on t
 - Pausing a credential removes it from every host config without deleting the record.
 - Saving or deleting a credential rewrites the manager's Docker config, pushes a fresh config to connected workers, and clears the in-memory remote digest cache.
 
-The manager writes `<data>/docker/config.json` with mode `0600` and sets `DOCKER_CONFIG` for its own Docker commands. A worker writes the matching file under `<worker data>/docker/config.json`, also `0600`, and uses it until the manager sends a replacement. The file contains base64 credentials, not sealed values.
+The manager writes `<data>/docker/config.json` with mode `0600` and sets `DOCKER_CONFIG` for its own Docker commands. A worker writes the matching file under `<worker data>/docker/config.json`, also `0600`, and uses it until the manager sends a replacement. The file contains base64 credentials, not sealed values. Both sides merge a visible host `~/.docker/config.json` (or `CETUS_HOST_DOCKER_CONFIG` on the manager) under the Cetus credentials, so a host-level `docker login` is used when no Cetus credential wins.
 
 | Method | Path | Scope | Behavior |
 |---|---|---|---|

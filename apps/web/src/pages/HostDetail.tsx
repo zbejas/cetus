@@ -28,7 +28,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { api, ApiError, can, scopeReason } from "../lib/api";
-import { queryKeys, useHost, useInventory, useMe } from "../lib/queries";
+import { queryKeys, useHost, useInventory, useMe, useUpdateWorker } from "../lib/queries";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Dialog, EmptyState, IconButton, Skeleton } from "../components/ui";
 import { LogViewer } from "../components/LogViewer";
@@ -61,7 +61,9 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
   const hostQuery = useHost(hostId);
   const inventoryQuery = useInventory(hostId);
   const me = useMe();
+  const updateWorker = useUpdateWorker();
   const canContainerWrite = can(me.data?.actor.scopes, "containers:write");
+  const canWorkerUpdate = can(me.data?.actor.scopes, "updates:apply");
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -69,6 +71,7 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<DockerContainer | null>(null);
   const [logsTarget, setLogsTarget] = useState<DockerContainer | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
 
   const host = inventoryQuery.data?.host ?? hostQuery.data;
   const inventory = inventoryQuery.data;
@@ -92,6 +95,18 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
       queryClient.invalidateQueries({ queryKey: queryKeys.hosts }),
       queryClient.invalidateQueries({ queryKey: ["audit"] }),
     ]);
+  }
+
+  async function confirmWorkerUpdate() {
+    if (!host) return;
+    try {
+      await updateWorker.mutateAsync(host.id);
+      toast.success("Worker update started", `${host.name} will reconnect when the new container is healthy.`);
+      setUpdateOpen(false);
+      await refreshInventory();
+    } catch (error) {
+      toast.error("Worker update failed", errorMessage(error, "The worker update could not be started."));
+    }
   }
 
   async function performAction(container: DockerContainer, action: string): Promise<boolean> {
@@ -188,9 +203,12 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
             <h2 style={{ margin: 0, fontSize: 26, fontWeight: 650, letterSpacing: "-0.045em" }}>{host.name}</h2>
             <StatusBadge status={host.status} />
             <Badge>{titleCase(host.kind)} host</Badge>
+            {host.workerUpdateAvailable ? <Badge tone="warn">Update available</Badge> : null}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 7, color: "var(--muted)", fontSize: 12 }}>
             <span>{host.dockerVersion ? `Docker ${host.dockerVersion}` : "Docker version unavailable"}</span>
+            <span>·</span>
+            <span>Cetus {host.cetusVersion ?? "version not reported"}</span>
             <span>·</span>
             <span>{host.os ?? inventory?.info?.os ?? "OS unavailable"} / {host.arch ?? inventory?.info?.architecture ?? "arch unavailable"}</span>
             <span>·</span>
@@ -202,6 +220,22 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
           </div>
         </div>
         <div className="page-actions">
+          {host.kind === "worker" && host.workerUpdateAvailable ? (
+            <Button
+              variant="primary"
+              onClick={() => setUpdateOpen(true)}
+              disabled={!host.workerUpdateSupported || host.status !== "online" || !canWorkerUpdate}
+              title={
+                !host.workerUpdateSupported
+                  ? "Update this worker manually once to enable panel updates."
+                  : host.status !== "online"
+                    ? "This worker is offline. Start it before updating."
+                    : !canWorkerUpdate ? scopeReason("updates:apply") : undefined
+              }
+            >
+              <RefreshCw size={14} /> Update worker
+            </Button>
+          ) : null}
           <Link to="/stacks" search={{ hostId }} className="btn">
             <Layers size={14} /> Open stacks
           </Link>
@@ -224,6 +258,19 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
           </Link>
         </div>
       </div>
+
+      {host.kind === "worker" && (!host.cetusVersion || (host.workerUpdateAvailable && !host.workerUpdateSupported)) ? (
+        <div
+          className="panel"
+          style={{ padding: "10px 14px", marginBottom: 14, borderColor: "color-mix(in oklab, var(--warn) 35%, transparent)" }}
+        >
+          <strong style={{ fontSize: 12.5 }}>Manual update required</strong>
+          <div className="help" style={{ marginTop: 3 }}>
+            This worker has not reported a Cetus version or predates self-update support. Update it once with its worker
+            compose file. After it reconnects on the new build, the update button and global schedule will manage it.
+          </div>
+        </div>
+      ) : null}
 
       {!inventory && inventoryQuery.isLoading ? (
         <SummarySkeleton />
@@ -327,6 +374,35 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
             </p>
           </>
         ) : null}
+      </Dialog>
+
+      <Dialog
+        open={updateOpen}
+        onClose={() => {
+          if (!updateWorker.isPending) setUpdateOpen(false);
+        }}
+        title={`Update ${host.name}`}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setUpdateOpen(false)} disabled={updateWorker.isPending}>Cancel</Button>
+            <Button
+              variant="primary"
+              onClick={() => void confirmWorkerUpdate()}
+              loading={updateWorker.isPending}
+            >
+              <RefreshCw size={14} /> Update worker
+            </Button>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0, color: "var(--text-soft)" }}>
+          This pulls the current Cetus image and recreates the worker container. The worker is briefly offline while the
+          new container starts and passes its health check.
+        </p>
+        <div className="surface-soft" style={{ display: "grid", gap: 4, padding: "10px 12px", fontSize: 12 }}>
+          <span>Worker version: <span className="mono">{host.cetusVersion ?? "not reported"}</span></span>
+          <span className="muted">The manager and worker images should match after the update.</span>
+        </div>
       </Dialog>
 
       <Dialog

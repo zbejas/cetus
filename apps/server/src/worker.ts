@@ -14,9 +14,20 @@ import {
   listImages,
   listNetworks,
   listVolumes,
+  refreshStats,
+  startStatsSampler,
 } from "./lib/docker.ts";
 import { runAutoUpdate } from "./lib/autoUpdateRunner.ts";
 import { checkComposeUpdates, clearRemoteDigestCache } from "./lib/updateCheck.ts";
+import { config } from "./config.ts";
+import { getSelfContainerInfo, type SelfContainerInfo } from "./lib/selfContainer.ts";
+import { mergeDockerConfig, readAmbientDockerConfig, writeDockerConfig } from "./lib/dockerConfig.ts";
+import {
+  buildSelfUpdateScript,
+  removeSelfUpdateTag,
+  selfUpdateBackupTag,
+  startSelfUpdateHelper,
+} from "./lib/selfUpdate.ts";
 
 const managerUrl = process.env.CETUS_MANAGER_URL ?? "ws://127.0.0.1:3000/api/ws/worker";
 const enrollToken = process.env.CETUS_ENROLL_TOKEN;
@@ -33,6 +44,22 @@ fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(trashDir, { recursive: true });
 fs.mkdirSync(dockerConfigDir, { recursive: true, mode: 0o700 });
 process.env.DOCKER_CONFIG = dockerConfigDir;
+
+const selfInfo: SelfContainerInfo | null = await getSelfContainerInfo();
+const selfUpdateFile = path.join(dataDir, "self-update.json");
+let latestRegistryAuth: { auths?: Record<string, unknown> } = { auths: {} };
+await refreshStats();
+startStatsSampler();
+
+interface PendingSelfUpdate {
+  operationId: string;
+  helperName: string;
+  backupTag: string;
+  statusFile: string;
+  logFile: string;
+  startedAt: number;
+  deadline: number;
+}
 
 interface StoredCredential {
   hostId: string;
@@ -175,6 +202,9 @@ async function buildInventory(stacks: Awaited<ReturnType<typeof scanStacks>>): P
     slug: workerName,
     kind: "worker",
     status: "online",
+    cetusVersion: config.version,
+    workerUpdateAvailable: false,
+    workerUpdateSupported: Boolean(selfInfo),
     dockerVersion: info?.serverVersion ?? null,
     os: info?.os ?? null,
     arch: info?.architecture ?? null,
@@ -218,6 +248,8 @@ async function sendSnapshot() {
         arch: info?.architecture ?? null,
         cpus: info?.cpus ?? null,
         memory: info?.memory ?? null,
+        cetusVersion: config.version,
+        selfUpdateSupported: Boolean(selfInfo),
       },
       stacks,
       inventory,
@@ -445,19 +477,21 @@ function handleComposeWrite(message: any) {
 
 function applyRegistryAuth(message: any) {
   try {
-    const config = message.config && typeof message.config === "object"
-      ? message.config
+    latestRegistryAuth = message.config && typeof message.config === "object"
+      ? message.config as { auths?: Record<string, unknown> }
       : { auths: {} };
-    const file = path.join(dockerConfigDir, "config.json");
-    const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
-    fs.writeFileSync(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temp, file);
-    fs.chmodSync(file, 0o600);
-    process.env.DOCKER_CONFIG = dockerConfigDir;
+    refreshRegistryAuth();
     clearRemoteDigestCache();
   } catch (error) {
     console.error("[cetus-worker] could not apply registry credentials", error);
   }
+}
+
+function refreshRegistryAuth() {
+  writeDockerConfig(
+    dockerConfigDir,
+    mergeDockerConfig(readAmbientDockerConfig(dockerConfigDir), latestRegistryAuth),
+  );
 }
 
 function handleMetadataWrite(message: any) {
@@ -479,6 +513,7 @@ function handleMetadataWrite(message: any) {
 
 async function handleUpdateCheck(message: any) {
   const requestId = String(message.requestId);
+  refreshRegistryAuth();
   try {
     const results = [];
     for (const entry of message.stacks ?? []) {
@@ -505,6 +540,7 @@ async function handleAutoUpdateCommand(message: any) {
   const stackName = String(message.stackName);
   const projectName = String(message.projectName ?? stackName);
   const dir = path.join(stacksDir, stackName);
+  refreshRegistryAuth();
   try {
     const result = await runAutoUpdate(
       {
@@ -522,12 +558,162 @@ async function handleAutoUpdateCommand(message: any) {
       exitCode: result.status === "success" ? 0 : 1,
       deployed: result.status === "success",
       autoUpdateStatus: result.status,
+      rateLimited: result.rateLimited === true,
     });
     await sendSnapshot();
   } catch (error) {
     send({ type: "operation.output", operationId, text: `[cetus] ${error instanceof Error ? error.message : String(error)}\n` });
     send({ type: "operation.finished", operationId, status: "failed", exitCode: 1, autoUpdateStatus: "failed" });
   }
+}
+
+function readPendingSelfUpdate(): PendingSelfUpdate | null {
+  try {
+    return JSON.parse(fs.readFileSync(selfUpdateFile, "utf8")) as PendingSelfUpdate;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingSelfUpdate(pending: PendingSelfUpdate) {
+  const temp = `${selfUpdateFile}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, `${JSON.stringify(pending, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temp, selfUpdateFile);
+}
+
+function clearPendingSelfUpdate(pending: PendingSelfUpdate) {
+  removeSelfUpdateTag(pending.backupTag);
+  fs.rmSync(selfUpdateFile, { force: true });
+  fs.rmSync(pending.statusFile, { force: true });
+  fs.rmSync(pending.logFile, { force: true });
+}
+
+function finishWorkerSelfUpdate(pending: PendingSelfUpdate, status: "success" | "failed", exitCode: number) {
+  if (socket?.readyState !== WebSocket.OPEN || !enrolled) return false;
+  try {
+    const log = fs.existsSync(pending.logFile) ? fs.readFileSync(pending.logFile, "utf8") : "";
+    if (log) {
+      send({
+        type: "operation.output",
+        operationId: pending.operationId,
+        text: log.length > 300_000 ? log.slice(log.length - 300_000) : log,
+      });
+    }
+  } catch {
+    // The status is still useful even when the helper log is unavailable.
+  }
+  send({
+    type: "operation.finished",
+    operationId: pending.operationId,
+    status,
+    exitCode,
+    deployed: status === "success",
+    autoUpdateStatus: status,
+  });
+  clearPendingSelfUpdate(pending);
+  void sendSnapshot();
+  return true;
+}
+
+async function reconcileWorkerSelfUpdate() {
+  const pending = readPendingSelfUpdate();
+  if (!pending) return;
+  while (Date.now() < pending.deadline) {
+    if (fs.existsSync(pending.statusFile)) {
+      let result: { status?: string; exitCode?: number } = {};
+      try {
+        result = JSON.parse(fs.readFileSync(pending.statusFile, "utf8"));
+      } catch {
+        result = {};
+      }
+      if (result.status === "success" || result.status === "failed") {
+        finishWorkerSelfUpdate(
+          pending,
+          result.status === "success" ? "success" : "failed",
+          typeof result.exitCode === "number" ? result.exitCode : result.status === "success" ? 0 : 1,
+        );
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  finishWorkerSelfUpdate(pending, "failed", 1);
+}
+
+function handleWorkerSelfUpdate(message: any) {
+  const operationId = String(message.operationId ?? "");
+  const stackName = String(message.stackName ?? "");
+  const projectName = String(message.projectName ?? stackName);
+  const composeFile = String(message.composeFile ?? "compose.yaml");
+  if (!operationId || !stackName || !selfInfo) {
+    send({ type: "operation.finished", operationId, status: "failed", exitCode: 1, autoUpdateStatus: "failed" });
+    return;
+  }
+  const existing = readPendingSelfUpdate();
+  if (existing) {
+    send({ type: "operation.output", operationId, text: "[cetus] Another worker self-update is already in progress.\n" });
+    send({ type: "operation.finished", operationId, status: "failed", exitCode: 1, autoUpdateStatus: "failed" });
+    return;
+  }
+  const dir = path.join(stacksDir, stackName);
+  if (!fs.existsSync(path.join(dir, composeFile))) {
+    send({ type: "operation.output", operationId, text: `[cetus] Worker compose file is missing: ${dir}/${composeFile}\n` });
+    send({ type: "operation.finished", operationId, status: "failed", exitCode: 1, autoUpdateStatus: "failed" });
+    return;
+  }
+
+  const healthGraceSeconds = Math.max(10, Math.min(600, Number(message.config?.healthGraceSeconds ?? 90) || 90));
+  const statusFile = path.join(dataDir, `self-update-${operationId}.json`);
+  const logFile = path.join(dataDir, `self-update-${operationId}.log`);
+  const helperName = `cetus-worker-self-update-${operationId}`;
+  const backupTag = selfUpdateBackupTag(operationId);
+  const pending: PendingSelfUpdate = {
+    operationId,
+    helperName,
+    backupTag,
+    statusFile,
+    logFile,
+    startedAt: Date.now(),
+    deadline: Date.now() + (healthGraceSeconds + 180) * 1_000,
+  };
+  writePendingSelfUpdate(pending);
+
+  const composeEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key, value]) => key.startsWith("CETUS_") && value !== undefined) as Array<[string, string]>,
+  );
+  const result = startSelfUpdateHelper({
+    helperName,
+    containerId: selfInfo.containerId,
+    imageRef: selfInfo.imageRef,
+    dockerConfig: dockerConfigDir,
+    env: composeEnv,
+    script: buildSelfUpdateScript({
+      operationId,
+      containerId: selfInfo.containerId,
+      dir,
+      projectName,
+      serviceName: selfInfo.service,
+      imageRef: selfInfo.imageRef,
+      backupTag,
+      statusFile,
+      logFile,
+      services: Array.isArray(message.config?.services) ? message.config.services.map(String) : undefined,
+      healthGraceSeconds,
+    }),
+  });
+
+  if (!result.ok) {
+    send({ type: "operation.output", operationId, text: `[cetus] Worker self-update helper failed to start: ${result.error}\n` });
+    send({ type: "operation.finished", operationId, status: "failed", exitCode: 1, autoUpdateStatus: "failed" });
+    clearPendingSelfUpdate(pending);
+    return;
+  }
+  send({
+    type: "operation.output",
+    operationId,
+    text: "[cetus] Worker update continues in a detached helper container. The worker will reconnect when the new container is healthy.\n",
+  });
+  void reconcileWorkerSelfUpdate();
 }
 
 async function handleLogsRequest(message: any) {
@@ -677,6 +863,7 @@ function connect() {
       }
       console.log(`[cetus-worker] enrolled as ${message.hostId}`);
       void sendSnapshot();
+      void reconcileWorkerSelfUpdate();
       return;
     }
     if (message.type === "command") {
@@ -697,6 +884,10 @@ function connect() {
     }
     if (message.type === "registry.auth") {
       applyRegistryAuth(message);
+      return;
+    }
+    if (message.type === "worker.self-update") {
+      handleWorkerSelfUpdate(message);
       return;
     }
     if (message.type === "metadata.write") {
