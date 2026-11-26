@@ -10,7 +10,7 @@ import { auth, seedAdminFromEnvironment } from "../auth.ts";
 import { config, trustedOrigins } from "../config.ts";
 import { ALL_SCOPES, ROLE_SCOPES, hasScope } from "@shared/scopes.ts";
 import { isPaletteId } from "@shared/palettes.ts";
-import type { Actor, AuditEntry, BulkUpdateResult, MaintenanceInput, OperationType, Role, StackMetadata, WorkerUpdateBulkResult } from "@shared/types.ts";
+import type { Actor, AuditEntry, BulkUpdateResult, MaintenanceInput, OperationType, Role, StackMetadata, UpdateCheckFailure, WorkerUpdateBulkResult } from "@shared/types.ts";
 import { ApiError, jsonError } from "../lib/errors.ts";
 import { apiDocsClient, apiDocsHtml } from "../lib/apiDocs.ts";
 import {
@@ -1807,9 +1807,23 @@ export async function createApp() {
         service: string;
         checkedAt: string;
       }[] = [];
+      const updateFailures: UpdateCheckFailure[] = [];
       for (const stack of stacks) {
         const check = checks.get(stack.id);
-        if (!check?.available) continue;
+        if (!check) continue;
+        for (const service of check.services) {
+          if (!service.error) continue;
+          updateFailures.push({
+            stackId: stack.id,
+            stackName: stack.displayName,
+            hostName: stack.hostName,
+            service: service.service,
+            image: service.image,
+            error: service.error,
+            checkedAt: check.checkedAt,
+          });
+        }
+        if (!check.available) continue;
         for (const service of check.services) {
           if (!service.updateAvailable) continue;
           updates.push({
@@ -1825,10 +1839,8 @@ export async function createApp() {
         }
       }
       updates.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt));
-      const updatesFailed = stacks.reduce((sum, stack) => {
-        const check = checks.get(stack.id);
-        return sum + (check?.services.filter((service) => service.error).length ?? 0);
-      }, 0);
+      updateFailures.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt));
+      const updatesFailed = updateFailures.length;
       return {
         totals: {
           hosts: hosts.length,
@@ -1845,6 +1857,7 @@ export async function createApp() {
         updates,
         updatesCheckedAt: updates[0]?.checkedAt ?? [...checks.values()].sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))[0]?.checkedAt ?? null,
         updatesFailed,
+        updateFailures,
         globalAutoUpdate: readGlobalAutoUpdate(),
         actor,
       };
