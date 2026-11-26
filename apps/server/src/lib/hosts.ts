@@ -66,6 +66,7 @@ export function hostRowToSummary(row: HostRow, counts?: {
     name: row.name,
     slug: row.slug,
     kind: row.kind,
+    localAddress: typeof info.localAddress === "string" ? info.localAddress : null,
     status: row.status,
     cetusVersion,
     workerUpdateAvailable,
@@ -117,7 +118,7 @@ export async function ensureLocalHost(): Promise<HostRow> {
     arch: info?.architecture ?? null,
     cpus: info?.cpus ?? null,
     memory: info?.memory ?? null,
-    info: JSON.stringify({ ...(info ?? {}), cetusVersion: config.version, selfUpdateSupported: false }),
+    info: JSON.stringify({ ...(info ?? {}), cetusVersion: config.version, selfUpdateSupported: false, localAddress: config.localAddress }),
     lastSeenAt: now,
   };
 
@@ -243,7 +244,7 @@ export async function getHostInventory(id: string): Promise<HostInventory | null
         disk: null,
       };
     }
-    return { ...remote, containers: withStackIds(remote.containers, row.id) };
+    return { ...remote, host: summary, containers: withStackIds(remote.containers, row.id) };
   }
 
   const [info, containers, images, volumes, networks, df, disk] = await Promise.all([

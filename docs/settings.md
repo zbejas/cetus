@@ -10,6 +10,7 @@ These are the only values that must be set outside the database:
 |---|---|---|
 | `CETUS_PORT` | `3000` | API and web listen port |
 | `CETUS_HOST` | `0.0.0.0` | Bind address |
+| `CETUS_LOCAL_ADDRESS` | none | LAN hostname or IP used for clickable service port links |
 | `CETUS_DATA_DIR` | `./data` | SQLite, auth material, operation logs, trash, backups |
 | `CETUS_DB_PATH` | `<data>/cetus.db` | SQLite file override |
 | `CETUS_AUTH_SECRET` | generated file | Optional better-auth secret override |

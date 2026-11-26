@@ -3354,6 +3354,22 @@ a {
   text-decoration: underline;
 }
 
+.port-chip-link {
+  color: var(--info);
+  text-decoration: none;
+}
+
+.port-chip-link:hover {
+  border-color: color-mix(in oklab, var(--info) 40%, transparent);
+  background: color-mix(in oklab, var(--info) 10%, transparent);
+  text-decoration: underline;
+}
+
+.port-chip-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .segmented {
   display: inline-flex;
   padding: 2px;

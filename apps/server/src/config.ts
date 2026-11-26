@@ -47,6 +47,12 @@ function httpUrl(value: string | null | undefined, fallback: string) {
   }
 }
 
+function addressValue(value: string | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+}
+
 function boolValue(key: string, environmentDefault: boolean) {
   const value = storedValue(key);
   if (value === "true") return true;
@@ -117,6 +123,7 @@ export const config = {
   publicUrl,
   initialPublicUrl,
   authPublicUrl: publicUrl,
+  localAddress: addressValue(process.env.CETUS_LOCAL_ADDRESS),
   allowSameOriginBootstrap: !storedValue("publicUrl"),
   dataDir,
   dbPath,

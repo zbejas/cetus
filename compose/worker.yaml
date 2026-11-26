@@ -10,6 +10,7 @@ services:
       CETUS_MANAGER_URL: "${CETUS_MANAGER_URL:?set CETUS_MANAGER_URL to wss://<manager>/api/ws/worker}"
       CETUS_ENROLL_TOKEN: "${CETUS_ENROLL_TOKEN:?set CETUS_ENROLL_TOKEN}"
       CETUS_WORKER_NAME: ${CETUS_WORKER_NAME:-worker}
+      CETUS_LOCAL_ADDRESS: ${CETUS_LOCAL_ADDRESS:-}
       CETUS_WORKER_STACKS_DIR: /opt/stacks
       CETUS_WORKER_DATA_DIR: /data
     volumes:

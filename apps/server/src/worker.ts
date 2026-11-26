@@ -201,6 +201,7 @@ async function buildInventory(stacks: Awaited<ReturnType<typeof scanStacks>>): P
     name: workerName,
     slug: workerName,
     kind: "worker",
+    localAddress: config.localAddress,
     status: "online",
     cetusVersion: config.version,
     workerUpdateAvailable: false,
@@ -250,6 +251,7 @@ async function sendSnapshot() {
         memory: info?.memory ?? null,
         cetusVersion: config.version,
         selfUpdateSupported: Boolean(selfInfo),
+        localAddress: config.localAddress,
       },
       stacks,
       inventory,
@@ -847,7 +849,7 @@ function connect() {
       hostId,
       secret,
       name: workerName,
-      info: {},
+      info: { localAddress: config.localAddress },
     });
   });
 

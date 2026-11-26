@@ -28,12 +28,13 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { api, ApiError, can, scopeReason } from "../lib/api";
-import { queryKeys, useHost, useInventory, useMe, useUpdateWorker } from "../lib/queries";
+import { queryKeys, useHost, useInventory, useMe, useStacks, useUpdateWorker } from "../lib/queries";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Dialog, EmptyState, IconButton, Skeleton } from "../components/ui";
 import { LogViewer } from "../components/LogViewer";
 import { StatusBadge } from "../components/Status";
 import { formatBytes, formatDate, formatPercent, relativeTime, shortId, titleCase } from "../lib/format";
+import { parsePortTokens, publishedPortHref } from "../lib/ports";
 import type {
   DockerContainer,
   DockerDfRow,
@@ -42,6 +43,7 @@ import type {
   DockerVolume,
   HostInventory,
   HostSummary,
+  StackSummary,
 } from "@shared/types";
 
 type HostTab = "overview" | "containers" | "images" | "volumes" | "networks" | "df";
@@ -60,6 +62,7 @@ const DOCKER_SOCKET = "unix:///var/run/docker.sock";
 export function HostDetailPage({ hostId }: { hostId: string }) {
   const hostQuery = useHost(hostId);
   const inventoryQuery = useInventory(hostId);
+  const stacksQuery = useStacks(`?hostId=${encodeURIComponent(hostId)}`);
   const me = useMe();
   const updateWorker = useUpdateWorker();
   const canContainerWrite = can(me.data?.actor.scopes, "containers:write");
@@ -316,9 +319,18 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
           />
         ) : inventory ? (
           tab === "overview" ? (
-            <OverviewTab host={host} inventory={inventory} onOpenContainers={() => setTab("containers")} />
+            <OverviewTab
+              host={host}
+              inventory={inventory}
+              stacks={stacksQuery.data ?? []}
+              stacksLoading={stacksQuery.isLoading}
+              stacksError={stacksQuery.error}
+              onRetryStacks={() => void stacksQuery.refetch()}
+              onOpenContainers={() => setTab("containers")}
+            />
           ) : tab === "containers" ? (
             <ContainersTab
+              host={host}
               containers={sortedContainers}
               busy={busy}
               canWrite={canContainerWrite}
@@ -560,13 +572,154 @@ function SummaryItem({
   );
 }
 
+function HostStacksPanel({
+  host,
+  stacks,
+  loading,
+  error,
+  onRetry,
+}: {
+  host: HostSummary;
+  stacks: StackSummary[];
+  loading: boolean;
+  error: unknown;
+  onRetry: () => void;
+}) {
+  const preview = stacks.slice(0, 8);
+
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Layers size={15} color="var(--accent)" />
+          <h3>Stacks</h3>
+          {loading ? <Skeleton className="h-5 w-7" /> : <Badge>{stacks.length}</Badge>}
+        </div>
+        {loading || error || stacks.length > 0 ? (
+          <Link to="/stacks" search={{ hostId: host.id }} className="btn btn-ghost btn-sm">
+            View all <ChevronRight size={12} />
+          </Link>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <div style={{ display: "grid", gap: 10, padding: 16 }}>
+          {[0, 1, 2].map((row) => <Skeleton key={row} className="h-9 w-full" />)}
+        </div>
+      ) : error ? (
+        <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <TriangleAlert size={15} color="var(--warn)" />
+          <span className="muted" style={{ fontSize: 12 }}>
+            {errorMessage(error, "Stacks could not be loaded for this host.")}
+          </span>
+          <Button size="sm" variant="ghost" onClick={onRetry} style={{ marginLeft: "auto" }}>
+            <RefreshCw size={12} /> Retry
+          </Button>
+        </div>
+      ) : preview.length === 0 ? (
+        <div className="panel-body" style={{ display: "grid", gap: 4 }}>
+          <strong style={{ fontSize: 12.5, fontWeight: 600 }}>No stacks indexed</strong>
+          <span className="muted" style={{ fontSize: 11.5 }}>
+            {host.kind === "worker"
+              ? "This worker has not reported any Compose stacks yet."
+              : "Scan the stacks folder or create a Compose project to see it here."}
+          </span>
+        </div>
+      ) : (
+        <div className="table-wrap" style={{ borderRadius: 0 }}>
+          <table className="data-table" aria-label={`Stacks on ${host.name}`}>
+            <thead>
+              <tr>
+                <th scope="col">Stack</th>
+                <th scope="col">Status</th>
+                <th scope="col">Services</th>
+                <th scope="col">Last deploy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.map((stack) => (
+                <tr key={stack.id}>
+                  <td data-label="Stack">
+                    <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                      <span className="stack-avatar" aria-hidden="true" style={{ width: 28, height: 28 }}>
+                        <Layers size={13} />
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                          <Link
+                            to="/stacks/$stackId"
+                            params={{ stackId: stack.id }}
+                            className="container-stack-link"
+                            style={{
+                              fontWeight: 600,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {stack.displayName}
+                          </Link>
+                          {stack.updateAvailable ? <Badge tone="info">Update</Badge> : null}
+                        </div>
+                        <div
+                          className="mono muted"
+                          style={{
+                            marginTop: 1,
+                            fontSize: 10.5,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {stack.name}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td data-label="Status"><StatusBadge status={stack.status} /></td>
+                  <td data-label="Services">
+                    <span
+                      className="mono"
+                      style={{ fontSize: 11.5 }}
+                      title={`${stack.runningCount} of ${stack.serviceCount} services running`}
+                    >
+                      {stack.runningCount}/{stack.serviceCount}
+                    </span>
+                  </td>
+                  <td data-label="Last deploy">
+                    <span
+                      className="muted"
+                      style={{ fontSize: 11.5 }}
+                      title={stack.lastDeployedAt ? formatDate(stack.lastDeployedAt) : "Not deployed yet"}
+                    >
+                      {stack.lastDeployedAt ? relativeTime(stack.lastDeployedAt) : "Never"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OverviewTab({
   host,
   inventory,
+  stacks,
+  stacksLoading,
+  stacksError,
+  onRetryStacks,
   onOpenContainers,
 }: {
   host: HostSummary;
   inventory: HostInventory;
+  stacks: StackSummary[];
+  stacksLoading: boolean;
+  stacksError: unknown;
+  onRetryStacks: () => void;
   onOpenContainers: () => void;
 }) {
   const info = inventory.info;
@@ -585,6 +738,14 @@ function OverviewTab({
   return (
     <div className="stack-layout">
       <div className="stack-main">
+        <HostStacksPanel
+          host={host}
+          stacks={stacks}
+          loading={stacksLoading}
+          error={stacksError}
+          onRetry={onRetryStacks}
+        />
+
         <section className="panel">
           <div className="panel-header">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -709,7 +870,7 @@ function OverviewTab({
                           <span className="badge badge-warn" style={{ minHeight: 18, fontSize: 9.5 }}>unmanaged</span>
                         )}
                       </td>
-                      <td data-label="Ports"><PortList ports={container.ports} /></td>
+                      <td data-label="Ports"><PortList ports={container.ports} host={host} /></td>
                       <td data-label="Uptime"><span className="muted" style={{ fontSize: 11.5 }}>{container.runningFor || "n/a"}</span></td>
                     </tr>
                   ))}
@@ -800,6 +961,7 @@ function OverviewTab({
 }
 
 function ContainersTab({
+  host,
   containers,
   busy,
   canWrite,
@@ -807,6 +969,7 @@ function ContainersTab({
   onLogs,
   onRemove,
 }: {
+  host: HostSummary;
   containers: DockerContainer[];
   busy: string | null;
   canWrite: boolean;
@@ -885,7 +1048,7 @@ function ContainersTab({
                     </td>
                     <td data-label="State"><ContainerStateBadge state={container.state} /></td>
                     <td data-label="Status"><span className="muted" style={{ fontSize: 11.5 }}>{container.status || "n/a"}</span></td>
-                    <td data-label="Ports"><PortList ports={container.ports} /></td>
+                    <td data-label="Ports"><PortList ports={container.ports} host={host} /></td>
                     <td data-label="Compose">
                       {container.unmanaged ? (
                         <span className="muted" style={{ fontSize: 11 }}>Not Compose managed</span>
@@ -1250,14 +1413,30 @@ function ContainerStateBadge({ state }: { state: string }) {
   );
 }
 
-function PortList({ ports }: { ports: string }) {
-  const values = ports.split(",").map((value) => value.trim()).filter(Boolean);
+function PortList({ ports, host }: { ports: string; host: HostSummary }) {
+  const values = parsePortTokens(ports);
   if (!values.length) return <span className="muted" style={{ fontSize: 11 }}>none</span>;
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-      {values.map((value) => (
-        <span className="chip mono" key={value} style={{ fontSize: 10 }}>{value}</span>
-      ))}
+      {values.map((port, index) => {
+        const href = publishedPortHref(port, host, window.location.hostname);
+        const key = `${port.raw}-${index}`;
+        return href ? (
+          <a
+            key={key}
+            className="chip mono port-chip-link"
+            style={{ fontSize: 10 }}
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            title={`Open ${href}`}
+          >
+            {port.raw} <ExternalLink size={9} />
+          </a>
+        ) : (
+          <span className="chip mono" key={key} style={{ fontSize: 10 }}>{port.raw}</span>
+        );
+      })}
     </div>
   );
 }

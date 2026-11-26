@@ -26,6 +26,7 @@ export interface RemoteHostSnapshot {
     arch: string | null;
     cpus: number | null;
     memory: number | null;
+    localAddress?: string | null;
   };
   stacks: RemoteStackSnapshot[];
   inventory: HostInventory | null;
