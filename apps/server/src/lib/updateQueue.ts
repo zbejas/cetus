@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { Actor, AutoUpdateConfig, UpdateQueueEntry, UpdateQueueView } from "@shared/types.ts";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
@@ -171,6 +171,16 @@ function markQueueEntry(id: string, update: Partial<QueueRow>) {
   db.update(schema.updateQueue).set(update).where(eq(schema.updateQueue.id, id)).run();
 }
 
+const RESTARTED_QUEUE_ERROR = "The manager restarted while this update was running.";
+
+function queueStatusFromOperation(status: string): UpdateQueueEntry["status"] {
+  return status === "success" ? "success" : status === "cancelled" ? "cancelled" : "failed";
+}
+
+function queueErrorFromOperation(status: string) {
+  return status === "failed" ? "The update operation failed. Open the operation for details." : null;
+}
+
 export function startNextQueuedUpdate() {
   if (draining) return;
   draining = true;
@@ -253,27 +263,46 @@ export function startNextQueuedUpdate() {
 
 function finishQueuedOperation(operationId: string, status: string) {
   const row = db.select().from(schema.updateQueue).where(eq(schema.updateQueue.operationId, operationId)).get();
-  if (!row || row.status !== "running") return;
-  const finalStatus = status === "success" ? "success" : status === "cancelled" ? "cancelled" : "failed";
+  if (!row) return;
+  const reconcilable = row.status === "running" || (row.status === "failed" && row.error === RESTARTED_QUEUE_ERROR);
+  if (!reconcilable) return;
+  const finalStatus = queueStatusFromOperation(status);
   markQueueEntry(row.id, {
     status: finalStatus,
     finishedAt: new Date(),
-    error: finalStatus === "failed" ? "The update operation failed. Open the operation for details." : null,
+    error: queueErrorFromOperation(status),
   });
   const timer = setTimeout(() => startNextQueuedUpdate(), 0);
   timer.unref?.();
 }
 
 export function recoverUpdateQueue() {
-  const running = db.select().from(schema.updateQueue)
-    .where(eq(schema.updateQueue.status, "running"))
+  const pending = db.select().from(schema.updateQueue)
+    .where(or(
+      eq(schema.updateQueue.status, "running"),
+      and(
+        eq(schema.updateQueue.status, "failed"),
+        eq(schema.updateQueue.error, RESTARTED_QUEUE_ERROR),
+      ),
+    ))
     .all();
-  for (const row of running) {
-    markQueueEntry(row.id, {
-      status: "failed",
-      error: "The manager restarted while this update was running.",
-      finishedAt: new Date(),
-    });
+  for (const row of pending) {
+    const operation = row.operationId ? getOperation(row.operationId) : null;
+    if (operation && operation.status !== "running") {
+      markQueueEntry(row.id, {
+        status: queueStatusFromOperation(operation.status),
+        finishedAt: operation.finishedAt ? new Date(operation.finishedAt) : new Date(),
+        error: queueErrorFromOperation(operation.status),
+      });
+      continue;
+    }
+    if (row.status === "running") {
+      markQueueEntry(row.id, {
+        status: "failed",
+        error: RESTARTED_QUEUE_ERROR,
+        finishedAt: new Date(),
+      });
+    }
   }
 }
 
