@@ -1,4 +1,4 @@
-import type { HostInventory, ServiceState, StackMetadata, StackStatus } from "@shared/types.ts";
+import type { HostInventory, MaintenanceInput, ServiceState, StackMetadata, StackStatus } from "@shared/types.ts";
 import { ApiError } from "./errors.ts";
 
 export interface RemoteStackSnapshot {
@@ -62,6 +62,12 @@ const updateCheckRequests = new Map<string, {
 }>();
 
 const containerActionRequests = new Map<string, {
+  resolve: (output: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+
+const maintenanceRequests = new Map<string, {
   resolve: (output: string) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -313,6 +319,35 @@ export function resolveContainerAction(
       code ?? "remote_container_failed",
       error,
     ));
+    return;
+  }
+  request.resolve(output ?? "");
+}
+
+export function requestWorkerMaintenance(hostId: string, spec: MaintenanceInput): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      maintenanceRequests.delete(requestId);
+      reject(new Error("Worker did not finish Docker maintenance in time."));
+    }, 4 * 60_000);
+    maintenanceRequests.set(requestId, { resolve, reject, timer });
+    const sent = sendToWorker(hostId, { type: "maintenance", requestId, ...spec });
+    if (!sent) {
+      clearTimeout(timer);
+      maintenanceRequests.delete(requestId);
+      reject(new Error("Worker is not connected."));
+    }
+  });
+}
+
+export function resolveMaintenance(requestId: string, output: string | null, error: string | null) {
+  const request = maintenanceRequests.get(requestId);
+  if (!request) return;
+  clearTimeout(request.timer);
+  maintenanceRequests.delete(requestId);
+  if (error) {
+    request.reject(new ApiError(500, "remote_maintenance_failed", error));
     return;
   }
   request.resolve(output ?? "");

@@ -10,6 +10,8 @@ import type {
   HostInventory,
   HostSummary,
   LogSource,
+  MaintenanceInput,
+  MaintenanceResult,
   Operation,
   RegistryCredentialInput,
   RegistryCredentialSummary,
@@ -315,6 +317,8 @@ export const api = {
   operation: (id: string) => request<Operation>(`/api/operations/${id}`),
   updateWorker: (hostId: string) =>
     request<Operation>(`/api/hosts/${hostId}/self-update`, { method: "POST" }),
+  maintenance: (hostId: string, input: MaintenanceInput) =>
+    request<MaintenanceResult>(`/api/hosts/${hostId}/maintenance`, { method: "POST", body: JSON.stringify(input) }),
   updateAllWorkers: () =>
     request<WorkerUpdateBulkResult>("/api/hosts/self-update", { method: "POST" }),
   audit: (params: { limit?: number; stackId?: string } = {}) => {

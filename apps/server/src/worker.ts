@@ -28,6 +28,7 @@ import {
   selfUpdateBackupTag,
   startSelfUpdateHelper,
 } from "./lib/selfUpdate.ts";
+import { maintenanceArgs, parseMaintenanceInput } from "./lib/maintenance.ts";
 
 const managerUrl = process.env.CETUS_MANAGER_URL ?? "ws://127.0.0.1:3000/api/ws/worker";
 const enrollToken = process.env.CETUS_ENROLL_TOKEN;
@@ -390,6 +391,33 @@ async function handleContainerAction(message: any) {
       requestId,
       error: error instanceof Error ? error.message : "Container action failed.",
       code: "action_failed",
+    });
+  }
+}
+
+async function handleMaintenance(message: any) {
+  const requestId = String(message.requestId);
+  try {
+    const spec = parseMaintenanceInput({
+      resource: message.resource,
+      action: message.action,
+      target: typeof message.target === "string" ? message.target : undefined,
+      all: typeof message.all === "boolean" ? message.all : undefined,
+      volumes: typeof message.volumes === "boolean" ? message.volumes : undefined,
+    });
+    const result = await docker(maintenanceArgs(spec), { timeoutMs: 3 * 60_000 });
+    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || "Docker maintenance failed.");
+    await sendSnapshot();
+    send({
+      type: "maintenance.result",
+      requestId,
+      output: `${result.stdout}${result.stderr}`,
+    });
+  } catch (error) {
+    send({
+      type: "maintenance.result",
+      requestId,
+      error: error instanceof Error ? error.message : "Docker maintenance failed.",
     });
   }
 }
@@ -882,6 +910,10 @@ function connect() {
     }
     if (message.type === "container.action") {
       void handleContainerAction(message);
+      return;
+    }
+    if (message.type === "maintenance") {
+      void handleMaintenance(message);
       return;
     }
     if (message.type === "registry.auth") {

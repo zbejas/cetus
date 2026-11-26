@@ -156,10 +156,17 @@ export async function listContainers(force = false): Promise<DockerContainer[]> 
 }
 
 export async function listImages(): Promise<DockerImage[]> {
-  const result = await docker(["images", "--format", "{{json .}}"], { timeoutMs: 15_000 });
-  if (result.exitCode !== 0) return [];
-  return parseJsonLines<Record<string, any>>(result.stdout)
-    .filter((row) => row.Repository !== "<none>")
+  const [tagged, dangling] = await Promise.all([
+    docker(["images", "--format", "{{json .}}"], { timeoutMs: 15_000 }),
+    docker(["images", "--filter", "dangling=true", "--format", "{{json .}}"], { timeoutMs: 15_000 }),
+  ]);
+  if (tagged.exitCode !== 0) return [];
+  const rows = [
+    ...parseJsonLines<Record<string, any>>(tagged.stdout),
+    ...(dangling.exitCode === 0 ? parseJsonLines<Record<string, any>>(dangling.stdout) : []),
+  ];
+  const seen = new Set<string>();
+  return rows
     .map((row) => ({
       repository: row.Repository ?? "",
       tag: row.Tag ?? "",
@@ -168,7 +175,13 @@ export async function listImages(): Promise<DockerImage[]> {
       size: row.Size ?? "",
       createdSince: row.CreatedSince ?? "",
       createdAt: row.CreatedAt ?? "",
-    }));
+    }))
+    .filter((row) => {
+      const key = `${row.repository}:${row.tag}:${row.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 export async function listVolumes(): Promise<DockerVolume[]> {

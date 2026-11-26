@@ -10,7 +10,7 @@ import { auth, seedAdminFromEnvironment } from "../auth.ts";
 import { config, trustedOrigins } from "../config.ts";
 import { ALL_SCOPES, ROLE_SCOPES, hasScope } from "@shared/scopes.ts";
 import { isPaletteId } from "@shared/palettes.ts";
-import type { Actor, AuditEntry, BulkUpdateResult, OperationType, Role, StackMetadata, WorkerUpdateBulkResult } from "@shared/types.ts";
+import type { Actor, AuditEntry, BulkUpdateResult, MaintenanceInput, OperationType, Role, StackMetadata, WorkerUpdateBulkResult } from "@shared/types.ts";
 import { ApiError, jsonError } from "../lib/errors.ts";
 import { apiDocsClient, apiDocsHtml } from "../lib/apiDocs.ts";
 import {
@@ -30,6 +30,7 @@ import {
 import {
   composeLogs,
   docker,
+  invalidateContainerCache,
   listContainers,
   runCommand,
 } from "../lib/docker.ts";
@@ -128,8 +129,10 @@ import {
   registerRemoteStackLogStream,
   removeRemoteStackLogStream,
   requestWorkerContainerAction,
+  requestWorkerMaintenance,
   resolveComposeWrite,
   resolveContainerAction,
+  resolveMaintenance,
   resolveMetadataWrite,
   registerWorker,
   rejectLogResponse,
@@ -143,6 +146,7 @@ import {
   unregisterWorker,
 } from "../lib/remote.ts";
 import { syncRemoteStacks } from "../lib/stacks.ts";
+import { maintenanceAction, maintenanceArgs, maintenanceScope, parseMaintenanceInput } from "../lib/maintenance.ts";
 
 const startedAt = Date.now();
 
@@ -401,6 +405,23 @@ async function runContainerAction(input: {
     request: input.request,
   });
   return { ok: true, output };
+}
+
+async function runHostMaintenance(hostId: string, spec: MaintenanceInput): Promise<string> {
+  const owner = getHostRow(hostId);
+  if (!owner) throw new ApiError(404, "host_not_found", "Host not found.");
+  if (owner.kind === "worker") {
+    if (!getRemoteHost(hostId)) {
+      throw new ApiError(503, "worker_offline", "The worker for this host is not connected.");
+    }
+    return requestWorkerMaintenance(hostId, spec);
+  }
+  const result = await docker(maintenanceArgs(spec), { timeoutMs: 3 * 60_000 });
+  invalidateContainerCache();
+  if (result.exitCode !== 0) {
+    throw new ApiError(500, "docker_error", result.stderr || result.stdout || "Docker maintenance failed.");
+  }
+  return `${result.stdout}${result.stderr}`;
 }
 
 function stackOperationArgs(action: string, profiles: string[] = []): { args: string[]; argsAfter?: string[]; deployed?: boolean } {
@@ -1476,6 +1497,15 @@ async function handleWorkerMessage(ws: any, raw: unknown) {
     return;
   }
 
+  if (message.type === "maintenance.result") {
+    resolveMaintenance(
+      String(message.requestId),
+      typeof message.output === "string" ? message.output : null,
+      message.error ? String(message.error) : null,
+    );
+    return;
+  }
+
   if (message.type === "update-check.result") {
     resolveUpdateCheck(
       String(message.requestId),
@@ -1929,6 +1959,35 @@ export async function createApp() {
       const inventory = await getHostInventory(params.id);
       if (!inventory) throw new ApiError(404, "host_not_found", "Host not found.");
       return inventory;
+    })
+    .post("/api/hosts/:id/maintenance", async ({ request, params, body }) => {
+      let spec: MaintenanceInput;
+      try {
+        spec = parseMaintenanceInput(body as MaintenanceInput);
+      } catch (error) {
+        throw new ApiError(422, "invalid_maintenance", error instanceof Error ? error.message : "Invalid maintenance request.");
+      }
+      const actor = await actorForScope(request, maintenanceScope(spec));
+      assertTarget(actor, params.id, null);
+      const output = await runHostMaintenance(params.id, spec);
+      recordAudit({
+        actor,
+        action: maintenanceAction(spec),
+        resourceType: spec.resource,
+        resourceId: spec.target ?? null,
+        hostId: params.id,
+        metadata: { all: spec.all ?? false, volumes: spec.volumes ?? false },
+        request,
+      });
+      return { ok: true, output };
+    }, {
+      body: t.Object({
+        resource: t.String({ maxLength: 20 }),
+        action: t.String({ maxLength: 20 }),
+        target: t.Optional(t.String({ maxLength: 300 })),
+        all: t.Optional(t.Boolean()),
+        volumes: t.Optional(t.Boolean()),
+      }),
     })
     .get("/api/stacks", async ({ request, query }) => {
       const actor = await actorForScope(request, "stacks:read");
