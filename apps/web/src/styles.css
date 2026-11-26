@@ -472,6 +472,7 @@ a {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
   overflow: hidden;
+  scroll-margin-top: 72px;
 }
 
 .panel-header {
@@ -488,6 +489,7 @@ a {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
 .panel-body {
@@ -870,6 +872,56 @@ a {
   max-width: 100%;
   border-radius: var(--radius-lg);
   container-type: inline-size;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.pagination-range {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.pagination-controls .icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+.pagination-page {
+  min-width: 88px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.pagination-size {
+  width: auto;
+  min-height: 28px;
+  height: 28px;
+  margin-right: 2px;
+  padding: 0 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11.5px;
 }
 
 .data-table {
@@ -3302,6 +3354,22 @@ a {
   text-decoration: underline;
 }
 
+.port-chip-link {
+  color: var(--info);
+  text-decoration: none;
+}
+
+.port-chip-link:hover {
+  border-color: color-mix(in oklab, var(--info) 40%, transparent);
+  background: color-mix(in oklab, var(--info) 10%, transparent);
+  text-decoration: underline;
+}
+
+.port-chip-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .segmented {
   display: inline-flex;
   padding: 2px;
@@ -3604,6 +3672,7 @@ a.update-queue-name:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3615,21 +3684,47 @@ a.update-queue-name:hover {
 
 .update-queue-recent {
   display: grid;
-  gap: 5px;
+  gap: 1px;
+}
+
+.update-queue-list + .update-queue-recent {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.update-queue-section-label {
+  padding: 0 1px 3px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  line-height: 1.4;
+  text-transform: uppercase;
 }
 
 .update-queue-recent-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 3px 1px;
+  padding: 5px 1px;
+}
+
+.update-queue-recent-row + .update-queue-recent-row {
+  border-top: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
 }
 
 .update-queue-recent-row .update-queue-name {
   flex: 1;
   color: var(--text-soft);
-  font-weight: 500;
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.update-queue-recent-row .update-queue-meta {
+  flex: none;
+  min-width: 52px;
+  text-align: right;
 }
 
 .update-queue-paused {
@@ -3642,6 +3737,38 @@ a.update-queue-name:hover {
   background: var(--warn-soft);
   color: var(--warn);
   font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  .update-queue-row {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    gap: 5px 9px;
+  }
+
+  .update-queue-index {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    align-self: start;
+    padding-top: 3px;
+  }
+
+  .update-queue-main {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .update-queue-row > .badge {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .update-queue-actions {
+    grid-column: 2 / span 2;
+    grid-row: 2;
+    justify-self: end;
+  }
 }
 
 .settings-shell {

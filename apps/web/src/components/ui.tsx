@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
-import { LoaderCircle, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, LoaderCircle, X } from "lucide-react";
 import { cn } from "../lib/format";
 
 type ButtonVariant = "default" | "primary" | "ghost" | "danger";
@@ -104,6 +104,70 @@ export function EmptyState({
 
 export function Skeleton({ className, style }: { className?: string; style?: React.CSSProperties }) {
   return <div className={cn("skeleton", className)} style={style} />;
+}
+
+export function Pagination({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  pageSizeOptions = [10, 25, 50],
+  itemLabel = "item",
+  ariaLabel,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
+  pageSizeOptions?: number[];
+  itemLabel?: string;
+  ariaLabel?: string;
+}) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(1, page), pageCount);
+  const first = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const last = Math.min(currentPage * pageSize, total);
+
+  return (
+    <nav className="pagination" aria-label={ariaLabel ?? `${itemLabel} pagination`}>
+      <span className="pagination-range" aria-live="polite">
+        {total === 0 ? `0 ${pluralize(total, itemLabel)}` : `${first}-${last} of ${total} ${pluralize(total, itemLabel)}`}
+      </span>
+      <div className="pagination-controls">
+        {onPageSizeChange ? (
+          <select
+            className="select pagination-size"
+            value={pageSize}
+            onChange={(event) => onPageSizeChange(Number(event.target.value))}
+            aria-label="Rows per page"
+          >
+            {pageSizeOptions.map((option) => (
+              <option key={option} value={option}>{option} / page</option>
+            ))}
+          </select>
+        ) : null}
+        <IconButton label="First page" onClick={() => onPageChange(1)} disabled={currentPage === 1}>
+          <ChevronsLeft size={14} />
+        </IconButton>
+        <IconButton label="Previous page" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1}>
+          <ChevronLeft size={14} />
+        </IconButton>
+        <span className="pagination-page">Page {currentPage} of {pageCount}</span>
+        <IconButton label="Next page" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === pageCount}>
+          <ChevronRight size={14} />
+        </IconButton>
+        <IconButton label="Last page" onClick={() => onPageChange(pageCount)} disabled={currentPage === pageCount}>
+          <ChevronsRight size={14} />
+        </IconButton>
+      </div>
+    </nav>
+  );
+}
+
+function pluralize(count: number, singular: string) {
+  return count === 1 ? singular : `${singular}s`;
 }
 
 export function PageHeader({

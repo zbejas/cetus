@@ -16,7 +16,7 @@ import {
 import { ApiError } from "../lib/api";
 import { useAudit, useOperation, useOperations } from "../lib/queries";
 import { useToast } from "../components/Toast";
-import { Badge, Button, Dialog, EmptyState, Input, PageHeader, Skeleton } from "../components/ui";
+import { Badge, Button, Dialog, EmptyState, Input, PageHeader, Pagination, Skeleton } from "../components/ui";
 import { StatusBadge } from "../components/Status";
 import { formatDate, relativeTime, shortId, titleCase } from "../lib/format";
 import type { AuditEntry, Operation } from "@shared/types";
@@ -60,8 +60,14 @@ export function ActivityPage() {
   const [actorType, setActorType] = useState<ActorFilter>("all");
   const [family, setFamily] = useState<FamilyFilter>("all");
   const [range, setRange] = useState<RangeFilter>("all");
+  const [operationPage, setOperationPage] = useState(1);
+  const [operationPageSize, setOperationPageSize] = useState(10);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(10);
   const [selectedOperationId, setSelectedOperationId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const operationsPanelRef = useRef<HTMLElement | null>(null);
+  const auditPanelRef = useRef<HTMLElement | null>(null);
   const operationOutputRef = useRef<HTMLPreElement | null>(null);
   const operationOutputPinned = useRef(true);
 
@@ -131,6 +137,34 @@ export function ActivityPage() {
   const runningOperations = filteredOperations.filter((operation) => operation.status === "running").length;
   const rangeLabel = RANGE_OPTIONS.find((option) => option.value === range)?.label ?? "All time";
 
+  const operationPageCount = Math.max(1, Math.ceil(filteredOperations.length / operationPageSize));
+  const auditPageCount = Math.max(1, Math.ceil(filteredAudit.length / auditPageSize));
+  const currentOperationPage = Math.min(operationPage, operationPageCount);
+  const currentAuditPage = Math.min(auditPage, auditPageCount);
+
+  const pagedOperations = useMemo(() => {
+    const start = (currentOperationPage - 1) * operationPageSize;
+    return filteredOperations.slice(start, start + operationPageSize);
+  }, [filteredOperations, currentOperationPage, operationPageSize]);
+
+  const pagedAudit = useMemo(() => {
+    const start = (currentAuditPage - 1) * auditPageSize;
+    return filteredAudit.slice(start, start + auditPageSize);
+  }, [filteredAudit, currentAuditPage, auditPageSize]);
+
+  useEffect(() => {
+    setOperationPage(1);
+    setAuditPage(1);
+  }, [term, actorType, family, range]);
+
+  useEffect(() => {
+    if (operationPage > operationPageCount) setOperationPage(operationPageCount);
+  }, [operationPage, operationPageCount]);
+
+  useEffect(() => {
+    if (auditPage > auditPageCount) setAuditPage(auditPageCount);
+  }, [auditPage, auditPageCount]);
+
   const selectedOperation = operationQuery.data
     ?? operationsQuery.data?.find((operation) => operation.id === selectedOperationId)
     ?? null;
@@ -148,6 +182,16 @@ export function ActivityPage() {
     setActorType("all");
     setFamily("all");
     setRange("all");
+  }
+
+  function changeOperationPage(next: number) {
+    setOperationPage(next);
+    scrollPanelIntoView(operationsPanelRef.current);
+  }
+
+  function changeAuditPage(next: number) {
+    setAuditPage(next);
+    scrollPanelIntoView(auditPanelRef.current);
   }
 
   async function refreshAll() {
@@ -355,7 +399,7 @@ export function ActivityPage() {
         </div>
       </section>
 
-      <section className="panel" style={{ marginBottom: 14 }}>
+      <section className="panel" style={{ marginBottom: 14 }} ref={operationsPanelRef}>
         <div className="panel-header">
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <ScrollText size={15} color="var(--accent)" />
@@ -397,69 +441,83 @@ export function ActivityPage() {
             action={activeFilters ? <Button variant="ghost" onClick={clearFilters}><X size={12} /> Clear filters</Button> : undefined}
           />
         ) : (
-          <div className="table-wrap" style={{ borderRadius: 0 }}>
-            <table className="data-table" aria-label="Recent operations">
-              <thead>
-                <tr>
-                  <th scope="col">Status</th>
-                  <th scope="col">Type</th>
-                  <th scope="col">Stack</th>
-                  <th scope="col">Actor</th>
-                  <th scope="col">Duration</th>
-                  <th scope="col">Started</th>
-                  <th scope="col"><span className="sr-only">Output</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredOperations.map((operation) => (
-                  <tr key={operation.id}>
-                    <td data-label="Status"><StatusBadge status={operation.status} /></td>
-                    <td data-label="Type">
-                      <div style={{ display: "grid", gap: 2 }}>
-                        <strong style={{ fontWeight: 600 }}>{titleCase(operation.type)}</strong>
-                        <span className="mono muted" style={{ fontSize: 10.5 }}>{shortId(operation.id)}</span>
-                      </div>
-                    </td>
-                    <td data-label="Stack">
-                      {operation.stackId ? (
-                        <Link
-                          to="/stacks/$stackId"
-                          params={{ stackId: operation.stackId }}
-                          className="accent"
-                          style={{ fontSize: 12 }}
-                        >
-                          {operation.stackName ?? shortId(operation.stackId)}
-                        </Link>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 12 }}>None</span>
-                      )}
-                    </td>
-                    <td data-label="Actor"><span style={{ fontSize: 12 }}>{operation.actorName}</span></td>
-                    <td data-label="Duration"><span className="mono" style={{ fontSize: 11.5 }}>{operationDuration(operation)}</span></td>
-                    <td data-label="Started" title={formatDate(operation.startedAt)}>
-                      <span className="muted" style={{ fontSize: 11.5 }}>{relativeTime(operation.startedAt)}</span>
-                    </td>
-                    <td data-label="Output">
-                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label={`View output for ${titleCase(operation.type)} operation ${shortId(operation.id)}`}
-                          onClick={() => setSelectedOperationId(operation.id)}
-                        >
-                          <ScrollText size={12} /> Output
-                        </Button>
-                      </div>
-                    </td>
+          <>
+            <div className="table-wrap" style={{ borderRadius: 0 }}>
+              <table className="data-table" aria-label="Recent operations">
+                <thead>
+                  <tr>
+                    <th scope="col">Status</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Stack</th>
+                    <th scope="col">Actor</th>
+                    <th scope="col">Duration</th>
+                    <th scope="col">Started</th>
+                    <th scope="col"><span className="sr-only">Output</span></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {pagedOperations.map((operation) => (
+                    <tr key={operation.id}>
+                      <td data-label="Status"><StatusBadge status={operation.status} /></td>
+                      <td data-label="Type">
+                        <div style={{ display: "grid", gap: 2 }}>
+                          <strong style={{ fontWeight: 600 }}>{titleCase(operation.type)}</strong>
+                          <span className="mono muted" style={{ fontSize: 10.5 }}>{shortId(operation.id)}</span>
+                        </div>
+                      </td>
+                      <td data-label="Stack">
+                        {operation.stackId ? (
+                          <Link
+                            to="/stacks/$stackId"
+                            params={{ stackId: operation.stackId }}
+                            className="accent"
+                            style={{ fontSize: 12 }}
+                          >
+                            {operation.stackName ?? shortId(operation.stackId)}
+                          </Link>
+                        ) : (
+                          <span className="muted" style={{ fontSize: 12 }}>None</span>
+                        )}
+                      </td>
+                      <td data-label="Actor"><span style={{ fontSize: 12 }}>{operation.actorName}</span></td>
+                      <td data-label="Duration"><span className="mono" style={{ fontSize: 11.5 }}>{operationDuration(operation)}</span></td>
+                      <td data-label="Started" title={formatDate(operation.startedAt)}>
+                        <span className="muted" style={{ fontSize: 11.5 }}>{relativeTime(operation.startedAt)}</span>
+                      </td>
+                      <td data-label="Output">
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`View output for ${titleCase(operation.type)} operation ${shortId(operation.id)}`}
+                            onClick={() => setSelectedOperationId(operation.id)}
+                          >
+                            <ScrollText size={12} /> Output
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pagination
+              page={currentOperationPage}
+              pageSize={operationPageSize}
+              total={filteredOperations.length}
+              onPageChange={changeOperationPage}
+              onPageSizeChange={(size) => {
+                setOperationPageSize(size);
+                setOperationPage(1);
+              }}
+              itemLabel="operation"
+              ariaLabel="Operations pagination"
+            />
+          </>
         )}
       </section>
 
-      <section className="panel">
+      <section className="panel" ref={auditPanelRef}>
         <div className="panel-header">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <ActivityIcon size={15} color="var(--accent)" />
@@ -494,9 +552,10 @@ export function ActivityPage() {
             action={activeFilters ? <Button variant="ghost" onClick={clearFilters}><X size={12} /> Clear filters</Button> : undefined}
           />
         ) : (
-          <div className="panel-body" style={{ padding: "4px 16px 8px" }}>
-            <div className="timeline">
-              {filteredAudit.map((entry) => {
+          <>
+            <div className="panel-body" style={{ padding: "4px 16px 8px" }}>
+              <div className="timeline">
+                {pagedAudit.map((entry) => {
                 const entryFamily = actionFamily(entry);
                 return (
                   <div className="timeline-item" key={entry.id}>
@@ -539,9 +598,22 @@ export function ActivityPage() {
                     </div>
                   </div>
                 );
-              })}
+                })}
+              </div>
             </div>
-          </div>
+            <Pagination
+              page={currentAuditPage}
+              pageSize={auditPageSize}
+              total={filteredAudit.length}
+              onPageChange={changeAuditPage}
+              onPageSizeChange={(size) => {
+                setAuditPageSize(size);
+                setAuditPage(1);
+              }}
+              itemLabel="event"
+              ariaLabel="Audit trail pagination"
+            />
+          </>
         )}
       </section>
 
@@ -737,4 +809,11 @@ function errorMessage(error: unknown, fallback: string): string {
 
 function countLabel(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function scrollPanelIntoView(node: HTMLElement | null) {
+  if (!node) return;
+  if (node.getBoundingClientRect().top < 0) {
+    node.scrollIntoView({ block: "start" });
+  }
 }

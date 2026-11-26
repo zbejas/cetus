@@ -40,6 +40,7 @@ Response:
 CETUS_MANAGER_URL=wss://cetus.example/api/ws/worker \
 CETUS_ENROLL_TOKEN=one-time-token \
 CETUS_WORKER_NAME=lxc-media \
+CETUS_LOCAL_ADDRESS=lxc-media.lan \
 CETUS_WORKER_STACKS_DIR=/opt/stacks \
 CETUS_WORKER_DATA_DIR=/data \
 bun apps/server/src/worker.ts
@@ -47,7 +48,9 @@ bun apps/server/src/worker.ts
 
 The manager stores only a hash of the enrollment token. The worker consumes the token, receives a host ID and a worker secret, and stores the secret in `CETUS_WORKER_DATA_DIR/worker.json` with mode `0600`. Reconnects use that credential, not the token. Worker secrets are compared in constant time.
 
-3. The host appears in `/api/hosts` and in the unified stacks view. Remote stacks are indexed under the worker host.
+Set `CETUS_LOCAL_ADDRESS` to the worker's LAN hostname or IP, without a scheme or port. The manager uses it for clickable service port links on that worker. Leave it unset to keep remote ports as plain text.
+
+3. The host appears in `/api/hosts` and in the unified stacks view. Remote stacks are indexed under the worker host. The worker host detail overview lists those stacks with status, running services, and last deploy.
 
 ### Update a worker
 

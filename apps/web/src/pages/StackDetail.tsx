@@ -38,6 +38,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError, can, scopeReason } from "../lib/api";
+import { publishedPortHref } from "../lib/ports";
 import { useCheckUpdates, useMe, useOperation, useOperations, useRestoreSnapshot, useSaveStack, useStack, useStackAction } from "../lib/queries";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Dialog, EmptyState, IconButton, Input, PageHeader, Skeleton } from "../components/ui";
@@ -46,7 +47,7 @@ import { YamlEditor } from "../components/YamlEditor";
 import { StackLogs } from "../components/StackLogs";
 import { AutoUpdateDialog } from "../components/AutoUpdateDialog";
 import { formatBytes, formatDate, formatPercent, relativeTime, shortId, titleCase } from "../lib/format";
-import type { ServiceState } from "@shared/types";
+import type { HostSummary, ServiceState } from "@shared/types";
 
 type DockTab = "logs" | "events" | "stats" | "console";
 type EditorTab = "compose" | "env" | "metadata";
@@ -690,6 +691,7 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
                       <ServiceRow
                         key={service.name}
                         service={service}
+                        host={stack.host}
                         selected={selected?.name === service.name}
                         canDeploy={canDeploy}
                         canExec={canExec}
@@ -863,21 +865,24 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
                       <div>
                         <div className="label">Ports</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {selected.ports.map((port) => (
-                            remoteStack ? (
-                              <span
-                                key={`${port.published}-${port.target}`}
-                                className="port-text"
-                                title={`Published on ${stack.hostName}. Remote port links are not available.`}
-                              >
-                                :{port.published} → {port.target}/{port.protocol}
-                              </span>
-                            ) : (
-                              <a key={`${port.published}-${port.target}`} className="port-link" href={`http://${window.location.hostname}:${port.published}`} target="_blank" rel="noreferrer">
+                          {selected.ports.map((port) => {
+                            const key = `${port.published}-${port.target}`;
+                            const href = publishedPortHref(port, stack.host, window.location.hostname);
+                            const title = href
+                              ? `Open ${href}`
+                              : stack.host.kind === "worker" && !stack.host.localAddress
+                                ? `Set CETUS_LOCAL_ADDRESS on ${stack.hostName} to enable port links.`
+                                : undefined;
+                            return href ? (
+                              <a key={key} className="port-link" href={href} target="_blank" rel="noreferrer" title={title}>
                                 :{port.published} → {port.target}/{port.protocol}
                               </a>
-                            )
-                          ))}
+                            ) : (
+                              <span key={key} className="port-text" title={title}>
+                                :{port.published} → {port.target}/{port.protocol}
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     ) : null}
@@ -1091,6 +1096,7 @@ export function StackDetailPage({ stackId }: { stackId: string }) {
 
 function ServiceRow({
   service,
+  host,
   selected,
   canDeploy,
   canExec,
@@ -1101,6 +1107,7 @@ function ServiceRow({
   onConsole,
 }: {
   service: ServiceState;
+  host: HostSummary;
   selected: boolean;
   canDeploy: boolean;
   canExec: boolean;
@@ -1141,28 +1148,30 @@ function ServiceRow({
       <td data-label="Image"><span className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>{service.image}</span></td>
       <td data-label="Ports">
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-          {service.ports.length ? service.ports.map((port) => (
-            remote ? (
-              <span
-                key={`${port.published}-${port.target}`}
-                className="port-text"
-                title="Published on the remote host. Remote port links are not available."
-              >
-                :{port.published}
-              </span>
-            ) : (
+          {service.ports.length ? service.ports.map((port) => {
+            const key = `${port.published}-${port.target}`;
+            const href = publishedPortHref(port, host, window.location.hostname);
+            const title = href
+              ? `Open ${href}`
+              : host.kind === "worker" && !host.localAddress
+                ? `Set CETUS_LOCAL_ADDRESS on ${host.name} to enable port links.`
+                : undefined;
+            return href ? (
               <a
-                key={`${port.published}-${port.target}`}
-                href={`http://${window.location.hostname}:${port.published}`}
+                key={key}
+                href={href}
                 target="_blank"
                 rel="noreferrer"
                 className="port-link"
+                title={title}
                 onClick={(event) => event.stopPropagation()}
               >
                 :{port.published} <ExternalLink size={9} />
               </a>
-            )
-          )) : <span className="muted" style={{ fontSize: 11 }}>none</span>}
+            ) : (
+              <span key={key} className="port-text" title={title}>:{port.published}</span>
+            );
+          }) : <span className="muted" style={{ fontSize: 11 }}>none</span>}
         </div>
       </td>
       <td data-label="CPU / memory">

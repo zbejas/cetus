@@ -59,7 +59,7 @@ export function FleetUpdateQueuePanel() {
             {active.length > 0 ? `${active.length} active` : "Idle"}
           </Badge>
         </div>
-        <span className="muted" style={{ fontSize: 11 }}>Runs one stack at a time</span>
+        <span className="muted hidden sm:inline" style={{ fontSize: 11 }}>Runs one stack at a time</span>
       </div>
       <div className="panel-body" style={{ display: "grid", gap: 12 }}>
         {pausedUntil && active.length > 0 ? (
@@ -74,10 +74,10 @@ export function FleetUpdateQueuePanel() {
               <div key={entry.id} className="update-queue-row" data-status="running">
                 <span className="update-queue-index"><span className="update-queue-dot" /></span>
                 <div className="update-queue-main">
-                  <Link to="/stacks/$stackId" params={{ stackId: entry.stackId }} className="update-queue-name">
+                  <Link to="/stacks/$stackId" params={{ stackId: entry.stackId }} className="update-queue-name" title={entry.displayName}>
                     {entry.displayName}
                   </Link>
-                  <span className="update-queue-meta">
+                  <span className="update-queue-meta" title={`${entry.hostName} · started ${relativeTime(entry.startedAt)}`}>
                     {entry.hostName} · started {relativeTime(entry.startedAt)}
                   </span>
                 </div>
@@ -88,10 +88,10 @@ export function FleetUpdateQueuePanel() {
               <div key={entry.id} className="update-queue-row" data-status="queued">
                 <span className="update-queue-index">{index + 1}</span>
                 <div className="update-queue-main">
-                  <Link to="/stacks/$stackId" params={{ stackId: entry.stackId }} className="update-queue-name">
+                  <Link to="/stacks/$stackId" params={{ stackId: entry.stackId }} className="update-queue-name" title={entry.displayName}>
                     {entry.displayName}
                   </Link>
-                  <span className="update-queue-meta">
+                  <span className="update-queue-meta" title={`${entry.hostName} · queued ${relativeTime(entry.createdAt)}`}>
                     {entry.hostName} · queued {relativeTime(entry.createdAt)}
                   </span>
                 </div>
@@ -130,11 +130,11 @@ export function FleetUpdateQueuePanel() {
         ) : null}
 
         {recent.length > 0 ? (
-          <div className="update-queue-recent">
-            <span className="label" style={{ margin: 0 }}>Recent</span>
+          <div className="update-queue-recent" role="group" aria-labelledby="update-queue-recent-label">
+            <span className="update-queue-section-label" id="update-queue-recent-label">Recent updates</span>
             {recent.slice(0, 4).map((entry) => (
               <div key={entry.id} className="update-queue-recent-row">
-                <span className="update-queue-name">{entry.displayName}</span>
+                <span className="update-queue-name" title={entry.displayName}>{entry.displayName}</span>
                 <span className="update-queue-meta">{relativeTime(entry.finishedAt ?? entry.createdAt)}</span>
                 <Badge tone={statusTone(entry.status)}>{titleCase(entry.status)}</Badge>
               </div>
@@ -144,7 +144,7 @@ export function FleetUpdateQueuePanel() {
 
         {active.length > 0 && queued.length > 0 ? (
           <p className="help" style={{ margin: 0 }}>
-            The manager starts the next stack when the current operation finishes. Reorder to change what runs next, or remove a stack to skip it.
+            The next stack starts when the current update finishes. Reorder to change what runs next, or remove a stack to skip it.
           </p>
         ) : null}
       </div>

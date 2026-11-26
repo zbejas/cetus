@@ -137,6 +137,7 @@ The Compose files are the source of truth for YAML. SQLite is an index and contr
 - `listStacks` reads one `docker ps -a` snapshot and reuses it for every stack. It skips `docker stats`. Stack detail reads container stats only for the stack being viewed.
 - Update-check rows are read with a primary-key range on the `setting` table instead of scanning every setting.
 - The operations list is compact by default in the browser: it omits retained output, and the Activity dialog fetches the full output for the selected operation.
+- The Activity page paginates the latest 60 operations and 100 audit events in the browser. Page changes do not issue new API requests.
 
 ### Auth and scopes
 

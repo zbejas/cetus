@@ -24,6 +24,7 @@ export interface HostSummary {
   name: string;
   slug: string;
   kind: "local" | "worker";
+  localAddress?: string | null;
   status: HostStatus;
   cetusVersion: string | null;
   workerUpdateAvailable: boolean;
