@@ -1,4 +1,4 @@
-import { and, eq, gte, lt } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import type { UpdateCheckResult } from "@shared/types.ts";
@@ -27,10 +27,7 @@ const UPDATE_CHECK_PREFIX = "updatecheck:";
 export function listUpdateChecks(): Map<string, UpdateCheckResult> {
   const map = new Map<string, UpdateCheckResult>();
   const rows = db.select().from(schema.setting)
-    .where(and(
-      gte(schema.setting.key, UPDATE_CHECK_PREFIX),
-      lt(schema.setting.key, `${UPDATE_CHECK_PREFIX};`),
-    ))
+    .where(like(schema.setting.key, `${UPDATE_CHECK_PREFIX}%`))
     .all();
   for (const row of rows) {
     try {

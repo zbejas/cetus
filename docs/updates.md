@@ -155,12 +155,12 @@ manager restarts -> reconcileSelfUpdates reads the status file -> operation fini
 | `POST /api/hosts/self-update` | `updates:apply` | Update every online worker running an older supported Cetus build |
 | `PUT /api/settings` | `settings:write` | Save the fleet default under `autoUpdate` |
 
-`GET /api/dashboard` returns cached update entries in `updates`, `updatesCheckedAt`, `updatesFailed`, and the fleet default in `globalAutoUpdate`. The MCP tools `apply_update` and `apply_all_updates` use the same update operation path.
+`GET /api/dashboard` returns cached update entries in `updates`, `updatesCheckedAt`, failed-check details in `updatesFailed` and `updateFailures` (stack, host, service, image, error, and check time), and the fleet default in `globalAutoUpdate`. The MCP tools `apply_update` and `apply_all_updates` use the same update operation path.
 
 ## Gotchas & invariants
 
 - `docker buildx` is required for registry digests. Without the plugin the check reports `Registry digest lookup requires the Docker buildx plugin`, and Cetus does not guess an update. The manager and worker images install `docker-cli-buildx` next to the Compose plugin.
-- Docker Hub and GHCR limit unauthenticated manifest and layer requests. Remote results are cached for 10 minutes and errors preserve the previous digest. An update check can still return an error during a rate limit; the UI shows the failed count instead of claiming the image is current. Add a credential in Settings > Registries and target the host that runs the stack, or keep a host-level `docker login` where Cetus can read it. A containerized manager must mount the host Docker config for that fallback; otherwise the container home has no login.
+- Docker Hub and GHCR limit unauthenticated manifest and layer requests. Remote results are cached for 10 minutes and errors preserve the previous digest. An update check can still return an error during a rate limit; the UI shows the failed count and per-image details instead of claiming the image is current. Add a credential in Settings > Registries and target the host that runs the stack, or keep a host-level `docker login` where Cetus can read it. A containerized manager must mount the host Docker config for that fallback; otherwise the container home has no login.
 - A manual Run now saves the dialog state first. The run uses the saved stack override, or the fleet defaults forced on when the stack inherits them.
 - The auto-update scheduler only reads saved metadata. Editing `cetus.json` on disk requires a stack scan or a metadata save before the new schedule is visible.
 - Rollback restores files and images, not application data. A database migration that runs on start is not reversed.

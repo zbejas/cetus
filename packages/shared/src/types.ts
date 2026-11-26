@@ -144,6 +144,16 @@ export interface UpdateCheckResult {
   services: UpdateCheckService[];
 }
 
+export interface UpdateCheckFailure {
+  stackId: string;
+  stackName: string;
+  hostName: string;
+  service: string;
+  image: string;
+  error: string;
+  checkedAt: string;
+}
+
 export interface FleetUpdateCheckSummary {
   checked: number;
   failed: number;
@@ -272,6 +282,7 @@ export interface DashboardData {
   }[];
   updatesCheckedAt?: string | null;
   updatesFailed?: number;
+  updateFailures?: UpdateCheckFailure[];
   globalAutoUpdate: AutoUpdateConfig;
 }
 

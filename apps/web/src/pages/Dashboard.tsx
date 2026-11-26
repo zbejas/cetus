@@ -27,7 +27,7 @@ import { GlobalAutoUpdateDialog } from "../components/GlobalAutoUpdateDialog";
 import { FleetUpdateQueuePanel } from "../components/FleetUpdateQueuePanel";
 import { useToast } from "../components/Toast";
 import { StatusBadge, StatusDot } from "../components/Status";
-import { Badge, Button, EmptyState, IconButton, PageHeader, Skeleton } from "../components/ui";
+import { Badge, Button, Dialog, EmptyState, IconButton, PageHeader, Skeleton } from "../components/ui";
 import { formatBytes, formatDate, formatPercent, relativeTime, titleCase } from "../lib/format";
 import { groupRepeatedActivity, ACTIVITY_GROUP_WINDOW_MS } from "../lib/activity";
 
@@ -337,6 +337,7 @@ export function DashboardPage() {
             updates={data.updates}
             checkedAt={data.updatesCheckedAt ?? null}
             failed={data.updatesFailed ?? 0}
+            failures={data.updateFailures ?? []}
             checking={updateCheck.isPending}
             onCheck={() => void checkForUpdates()}
             globalAutoUpdate={data.globalAutoUpdate}
@@ -696,6 +697,7 @@ function UpdateQueuePanel({
   updates,
   checkedAt,
   failed,
+  failures,
   checking,
   onCheck,
   globalAutoUpdate,
@@ -708,6 +710,7 @@ function UpdateQueuePanel({
   updates: DashboardData["updates"];
   checkedAt: string | null;
   failed: number;
+  failures: NonNullable<DashboardData["updateFailures"]>;
   checking: boolean;
   onCheck: () => void;
   globalAutoUpdate: DashboardData["globalAutoUpdate"];
@@ -717,6 +720,12 @@ function UpdateQueuePanel({
   onUpdateAll: () => void;
   onConfigureSchedule: () => void;
 }) {
+  const [failuresOpen, setFailuresOpen] = useState(false);
+
+  useEffect(() => {
+    if (failuresOpen && failures.length === 0) setFailuresOpen(false);
+  }, [failures.length, failuresOpen]);
+
   return (
     <section className="panel">
       <div className="panel-header" style={{ flexWrap: "wrap" }}>
@@ -794,16 +803,23 @@ function UpdateQueuePanel({
             Cetus compares each running image digest with its registry manifest. Checks run every six hours and can be
             triggered from here or from a stack page.
           </p>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onCheck}
-            loading={checking}
-            disabled={checking}
-            style={{ marginTop: 11, border: "1px solid var(--border)" }}
-          >
-            <RefreshCw size={13} /> {checkedAt ? "Check again" : "Check now"}
-          </Button>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 11, flexWrap: "wrap" }}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onCheck}
+              loading={checking}
+              disabled={checking}
+              style={{ border: "1px solid var(--border)" }}
+            >
+              <RefreshCw size={13} /> {checkedAt ? "Check again" : "Check now"}
+            </Button>
+            {failed > 0 && failures.length > 0 ? (
+              <Button size="sm" variant="ghost" onClick={() => setFailuresOpen(true)}>
+                View more <ChevronRight size={13} />
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : (
         <div>
@@ -836,13 +852,65 @@ function UpdateQueuePanel({
               <RefreshCw size={13} /> Check again
             </Button>
             {failed > 0 ? (
-              <span className="muted" style={{ fontSize: 10.5 }}>
+              <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5 }}>
                 {failed} image{failed === 1 ? "" : "s"} could not be checked
+                {failures.length > 0 ? (
+                  <button type="button" className="text-link" onClick={() => setFailuresOpen(true)}>
+                    View more
+                  </button>
+                ) : null}
               </span>
             ) : null}
           </div>
         </div>
       )}
+
+      <Dialog
+        open={failuresOpen}
+        onClose={() => setFailuresOpen(false)}
+        title="Images that could not be checked"
+        wide
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setFailuresOpen(false)}>Close</Button>
+            <Button onClick={onCheck} loading={checking} disabled={checking}>
+              <RefreshCw size={13} /> Check again
+            </Button>
+          </>
+        }
+      >
+        <div className="update-failure-summary">
+          <TriangleAlert size={15} />
+          <span>
+            Cetus could not compare {failures.length} image{failures.length === 1 ? "" : "s"} with the registry.
+            The next sweep retries them automatically. A registry that limits anonymous requests may need
+            credentials in Settings &gt; Registries.
+          </span>
+        </div>
+        <div className="update-failure-list">
+          {failures.map((failure) => (
+            <div key={`${failure.stackId}-${failure.service}-${failure.image}`} className="update-failure-row">
+              <div className="update-failure-head">
+                <Link
+                  to="/stacks/$stackId"
+                  params={{ stackId: failure.stackId }}
+                  className="update-queue-name"
+                  onClick={() => setFailuresOpen(false)}
+                >
+                  {failure.stackName}
+                </Link>
+                <span className="mono update-failure-service">{failure.service}</span>
+                <Badge>{failure.hostName}</Badge>
+                <span className="update-failure-time" title={formatDate(failure.checkedAt)}>
+                  {relativeTime(failure.checkedAt)}
+                </span>
+              </div>
+              <div className="mono update-failure-image">{failure.image}</div>
+              <div className="update-failure-error">{failure.error}</div>
+            </div>
+          ))}
+        </div>
+      </Dialog>
     </section>
   );
 }
