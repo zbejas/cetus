@@ -12,7 +12,6 @@ import {
   ExternalLink,
   HardDrive,
   Images,
-  Info,
   Layers,
   LoaderCircle,
   MemoryStick,
@@ -31,6 +30,7 @@ import { api, ApiError, can, scopeReason } from "../lib/api";
 import { queryKeys, useHost, useInventory, useMe, useStacks, useUpdateWorker } from "../lib/queries";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Dialog, EmptyState, IconButton, Skeleton } from "../components/ui";
+import { HostMaintenanceDialog, type MaintenanceTarget } from "../components/HostMaintenanceDialog";
 import { LogViewer } from "../components/LogViewer";
 import { StatusBadge } from "../components/Status";
 import { formatBytes, formatDate, formatPercent, relativeTime, shortId, titleCase } from "../lib/format";
@@ -67,6 +67,13 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
   const updateWorker = useUpdateWorker();
   const canContainerWrite = can(me.data?.actor.scopes, "containers:write");
   const canWorkerUpdate = can(me.data?.actor.scopes, "updates:apply");
+  const canImageWrite = can(me.data?.actor.scopes, "images:write");
+  const canImagePrune = can(me.data?.actor.scopes, "images:prune");
+  const canVolumeWrite = can(me.data?.actor.scopes, "volumes:write");
+  const canVolumePrune = can(me.data?.actor.scopes, "volumes:prune");
+  const canNetworkWrite = can(me.data?.actor.scopes, "networks:write");
+  const canNetworkPrune = can(me.data?.actor.scopes, "networks:prune");
+  const canSystemPrune = can(me.data?.actor.scopes, "system:prune");
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -75,6 +82,7 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
   const [removeTarget, setRemoveTarget] = useState<DockerContainer | null>(null);
   const [logsTarget, setLogsTarget] = useState<DockerContainer | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [maintenance, setMaintenance] = useState<MaintenanceTarget | null>(null);
 
   const host = inventoryQuery.data?.host ?? hostQuery.data;
   const inventory = inventoryQuery.data;
@@ -334,18 +342,42 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
               containers={sortedContainers}
               busy={busy}
               canWrite={canContainerWrite}
+              canPrune={canSystemPrune}
+              onPrune={() => setMaintenance({ kind: "container-prune" })}
               onAction={(container, action) => void performAction(container, action)}
               onLogs={(container) => void loadLogs(container)}
               onRemove={setRemoveTarget}
             />
           ) : tab === "images" ? (
-            <ImagesTab images={inventory.images} />
+            <ImagesTab
+              images={inventory.images}
+              canWrite={canImageWrite}
+              canPrune={canImagePrune}
+              onRemove={(image) => setMaintenance({ kind: "image-remove", image })}
+              onPrune={() => setMaintenance({ kind: "image-prune" })}
+            />
           ) : tab === "volumes" ? (
-            <VolumesTab volumes={inventory.volumes} />
+            <VolumesTab
+              volumes={inventory.volumes}
+              canWrite={canVolumeWrite}
+              canPrune={canVolumePrune}
+              onRemove={(volume) => setMaintenance({ kind: "volume-remove", volume })}
+              onPrune={() => setMaintenance({ kind: "volume-prune" })}
+            />
           ) : tab === "networks" ? (
-            <NetworksTab networks={inventory.networks} />
+            <NetworksTab
+              networks={inventory.networks}
+              canWrite={canNetworkWrite}
+              canPrune={canNetworkPrune}
+              onRemove={(network) => setMaintenance({ kind: "network-remove", network })}
+              onPrune={() => setMaintenance({ kind: "network-prune" })}
+            />
           ) : (
-            <DfTab rows={inventory.df} />
+            <DfTab
+              rows={inventory.df}
+              canPrune={canSystemPrune}
+              onPrune={() => setMaintenance({ kind: "system-prune" })}
+            />
           )
         ) : null}
       </div>
@@ -453,6 +485,12 @@ export function HostDetailPage({ hostId }: { hostId: string }) {
           />
         ) : null}
       </Dialog>
+
+      <HostMaintenanceDialog
+        hostId={hostId}
+        target={maintenance}
+        onClose={() => setMaintenance(null)}
+      />
     </div>
   );
 }
@@ -749,64 +787,6 @@ function OverviewTab({
         <section className="panel">
           <div className="panel-header">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Server size={15} color="var(--accent)" />
-              <h3>Docker engine</h3>
-            </div>
-            <span className="mono muted" style={{ fontSize: 11 }}>{info?.serverVersion ?? "not reported"}</span>
-          </div>
-          <div className="panel-body">
-            {info ? (
-              <>
-                <dl className="kv">
-                  <dt>Server version</dt><dd className="mono">{info.serverVersion}</dd>
-                  <dt>API version</dt><dd className="mono">{info.apiVersion}</dd>
-                  <dt>OS</dt><dd>{info.os}</dd>
-                  <dt>Kernel</dt><dd className="mono">{info.kernel}</dd>
-                  <dt>Architecture</dt><dd>{info.architecture}</dd>
-                  <dt>Driver</dt><dd>{info.driver || "n/a"}</dd>
-                  <dt>Docker root</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{info.dockerRootDir || "n/a"}</dd>
-                  <dt>Socket</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{DOCKER_SOCKET}</dd>
-                  <dt>Containers</dt>
-                  <dd>{info.containersRunning} running · {info.containersStopped} stopped · {info.containersPaused} paused</dd>
-                  <dt>Images</dt><dd>{info.images}</dd>
-                  <dt>Warnings</dt><dd>{warnings.length ? `${warnings.length} reported` : "None reported"}</dd>
-                </dl>
-                {warnings.length ? (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 9,
-                      marginTop: 14,
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      border: "1px solid color-mix(in oklab, var(--warn) 30%, transparent)",
-                      background: "var(--warn-soft)",
-                    }}
-                  >
-                    <TriangleAlert size={14} color="var(--warn)" style={{ flex: "none", marginTop: 2 }} />
-                    <div>
-                      <div style={{ color: "var(--warn)", fontSize: 12, fontWeight: 600 }}>Docker warnings</div>
-                      <ul style={{ margin: "5px 0 0", paddingLeft: 18, color: "var(--text-soft)", fontSize: 12 }}>
-                        {warnings.map((warning) => <li key={warning}>{warning}</li>)}
-                      </ul>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <EmptyState
-                icon={<Server size={18} />}
-                title="Docker engine unavailable"
-                description="Docker did not return engine information for this host. Inventory retries automatically."
-              />
-            )}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <ContainerIcon size={15} color="var(--accent)" />
               <h3>Running containers</h3>
               <Badge>{running.length}</Badge>
@@ -955,6 +935,64 @@ function OverviewTab({
             </div>
           ) : null}
         </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Server size={15} color="var(--accent)" />
+              <h3>Docker engine</h3>
+            </div>
+            <span className="mono muted" style={{ fontSize: 11 }}>{info?.serverVersion ?? "not reported"}</span>
+          </div>
+          <div className="panel-body">
+            {info ? (
+              <>
+                <dl className="kv">
+                  <dt>Server version</dt><dd className="mono">{info.serverVersion}</dd>
+                  <dt>API version</dt><dd className="mono">{info.apiVersion}</dd>
+                  <dt>OS</dt><dd>{info.os}</dd>
+                  <dt>Kernel</dt><dd className="mono">{info.kernel}</dd>
+                  <dt>Architecture</dt><dd>{info.architecture}</dd>
+                  <dt>Driver</dt><dd>{info.driver || "n/a"}</dd>
+                  <dt>Docker root</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{info.dockerRootDir || "n/a"}</dd>
+                  <dt>Socket</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{DOCKER_SOCKET}</dd>
+                  <dt>Containers</dt>
+                  <dd>{info.containersRunning} running · {info.containersStopped} stopped · {info.containersPaused} paused</dd>
+                  <dt>Images</dt><dd>{info.images}</dd>
+                  <dt>Warnings</dt><dd>{warnings.length ? `${warnings.length} reported` : "None reported"}</dd>
+                </dl>
+                {warnings.length ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 9,
+                      marginTop: 14,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: "1px solid color-mix(in oklab, var(--warn) 30%, transparent)",
+                      background: "var(--warn-soft)",
+                    }}
+                  >
+                    <TriangleAlert size={14} color="var(--warn)" style={{ flex: "none", marginTop: 2 }} />
+                    <div>
+                      <div style={{ color: "var(--warn)", fontSize: 12, fontWeight: 600 }}>Docker warnings</div>
+                      <ul style={{ margin: "5px 0 0", paddingLeft: 18, color: "var(--text-soft)", fontSize: 12 }}>
+                        {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                      </ul>
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <EmptyState
+                icon={<Server size={18} />}
+                title="Docker engine unavailable"
+                description="Docker did not return engine information for this host. Inventory retries automatically."
+              />
+            )}
+          </div>
+        </section>
       </aside>
     </div>
   );
@@ -965,21 +1003,26 @@ function ContainersTab({
   containers,
   busy,
   canWrite,
+  canPrune,
   onAction,
   onLogs,
   onRemove,
+  onPrune,
 }: {
   host: HostSummary;
   containers: DockerContainer[];
   busy: string | null;
   canWrite: boolean;
+  canPrune: boolean;
   onAction: (container: DockerContainer, action: string) => void;
   onLogs: (container: DockerContainer) => void;
   onRemove: (container: DockerContainer) => void;
+  onPrune: () => void;
 }) {
   const running = containers.filter((container) => container.state === "running").length;
   const unmanaged = containers.filter((container) => container.unmanaged).length;
   const writeReason = canWrite ? undefined : scopeReason("containers:write");
+  const pruneReason = canPrune ? "Remove stopped containers." : scopeReason("system:prune");
 
   return (
     <section className="panel">
@@ -989,9 +1032,14 @@ function ContainersTab({
           <h3>Containers</h3>
           <Badge>{containers.length}</Badge>
         </div>
-        <span className="muted" style={{ fontSize: 11 }}>
-          {running} running{unmanaged ? ` · ${unmanaged} unmanaged` : ""}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="muted hidden sm:inline" style={{ fontSize: 11 }}>
+            {running} running{unmanaged ? ` · ${unmanaged} unmanaged` : ""}
+          </span>
+          <Button size="sm" variant="ghost" onClick={onPrune} disabled={!canPrune} title={pruneReason}>
+            <Trash2 size={12} /> Prune
+          </Button>
+        </div>
       </div>
       {containers.length ? (
         <div className="table-wrap" style={{ borderRadius: 0 }}>
@@ -1143,7 +1191,25 @@ function ContainersTab({
   );
 }
 
-function ImagesTab({ images }: { images: DockerImage[] }) {
+function ImagesTab({
+  images,
+  canWrite,
+  canPrune,
+  onRemove,
+  onPrune,
+}: {
+  images: DockerImage[];
+  canWrite: boolean;
+  canPrune: boolean;
+  onRemove: (image: DockerImage) => void;
+  onPrune: () => void;
+}) {
+  const writeReason = canWrite ? undefined : scopeReason("images:write");
+  const pruneReason = !canPrune
+    ? scopeReason("images:prune")
+    : images.length === 0
+      ? "No images to prune."
+      : "Remove unused images from this host.";
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1152,9 +1218,10 @@ function ImagesTab({ images }: { images: DockerImage[] }) {
           <h3>Images</h3>
           <Badge>{images.length}</Badge>
         </div>
-        <span className="muted" style={{ fontSize: 11 }}>Read-only</span>
+        <Button size="sm" variant="ghost" onClick={onPrune} disabled={!canPrune || images.length === 0} title={pruneReason}>
+          <Trash2 size={12} /> Prune
+        </Button>
       </div>
-      <NoteBar>Read-only. Image prune is not exposed in this build.</NoteBar>
       {images.length ? (
         <div className="table-wrap" style={{ borderRadius: 0 }}>
           <table className="data-table" aria-label="Docker images">
@@ -1165,28 +1232,49 @@ function ImagesTab({ images }: { images: DockerImage[] }) {
                 <th scope="col">Digest</th>
                 <th scope="col">Size</th>
                 <th scope="col">Created</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
-              {images.map((image) => (
-                <tr key={`${image.repository}:${image.tag}:${image.id}`}>
-                  <td data-label="Repository:tag">
-                    <span className="mono" style={{ fontSize: 12 }}>{image.repository}:{image.tag || "none"}</span>
-                  </td>
-                  <td data-label="Image ID">
-                    <span className="mono muted" style={{ fontSize: 11 }} title={image.id}>{shortImageId(image.id)}</span>
-                  </td>
-                  <td data-label="Digest">
-                    <span className="mono muted" style={{ fontSize: 11 }} title={image.digest ?? undefined}>
-                      {image.digest ? shortId(image.digest, 19) : "none"}
-                    </span>
-                  </td>
-                  <td data-label="Size"><span style={{ fontSize: 12 }}>{image.size}</span></td>
-                  <td data-label="Created" title={formatDate(image.createdAt)}>
-                    <span className="muted" style={{ fontSize: 11.5 }}>{image.createdSince || formatDate(image.createdAt)}</span>
-                  </td>
-                </tr>
-              ))}
+              {images.map((image) => {
+                const dangling = image.repository === "<none>";
+                const label = dangling ? "dangling" : `${image.repository}:${image.tag || "none"}`;
+                return (
+                  <tr key={`${image.repository}:${image.tag}:${image.id}`}>
+                    <td data-label="Repository:tag">
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                        <span className="mono" style={{ fontSize: 12, overflowWrap: "anywhere" }}>{label}</span>
+                        {dangling ? <Badge tone="warn">untagged</Badge> : null}
+                      </div>
+                    </td>
+                    <td data-label="Image ID">
+                      <span className="mono muted" style={{ fontSize: 11 }} title={image.id}>{shortImageId(image.id)}</span>
+                    </td>
+                    <td data-label="Digest">
+                      <span className="mono muted" style={{ fontSize: 11 }} title={image.digest ?? undefined}>
+                        {image.digest ? shortId(image.digest, 19) : "none"}
+                      </span>
+                    </td>
+                    <td data-label="Size"><span style={{ fontSize: 12 }}>{image.size}</span></td>
+                    <td data-label="Created" title={formatDate(image.createdAt)}>
+                      <span className="muted" style={{ fontSize: 11.5 }}>{image.createdSince || formatDate(image.createdAt)}</span>
+                    </td>
+                    <td data-label="Actions">
+                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                        <IconButton
+                          label={`Remove image ${label}`}
+                          title={writeReason ?? `Remove ${label}`}
+                          disabled={!canWrite}
+                          onClick={() => onRemove(image)}
+                          style={{ color: "var(--danger)" }}
+                        >
+                          <Trash2 size={13} />
+                        </IconButton>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1201,7 +1289,25 @@ function ImagesTab({ images }: { images: DockerImage[] }) {
   );
 }
 
-function VolumesTab({ volumes }: { volumes: DockerVolume[] }) {
+function VolumesTab({
+  volumes,
+  canWrite,
+  canPrune,
+  onRemove,
+  onPrune,
+}: {
+  volumes: DockerVolume[];
+  canWrite: boolean;
+  canPrune: boolean;
+  onRemove: (volume: DockerVolume) => void;
+  onPrune: () => void;
+}) {
+  const writeReason = canWrite ? undefined : scopeReason("volumes:write");
+  const pruneReason = !canPrune
+    ? scopeReason("volumes:prune")
+    : volumes.length === 0
+      ? "No volumes to prune."
+      : "Remove unused volumes from this host.";
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1210,9 +1316,10 @@ function VolumesTab({ volumes }: { volumes: DockerVolume[] }) {
           <h3>Volumes</h3>
           <Badge>{volumes.length}</Badge>
         </div>
-        <span className="muted" style={{ fontSize: 11 }}>Read-only</span>
+        <Button size="sm" variant="ghost" onClick={onPrune} disabled={!canPrune || volumes.length === 0} title={pruneReason}>
+          <Trash2 size={12} /> Prune
+        </Button>
       </div>
-      <NoteBar>Read-only. Volume removal and prune are not exposed in this build.</NoteBar>
       {volumes.length ? (
         <div className="table-wrap" style={{ borderRadius: 0 }}>
           <table className="data-table" aria-label="Docker volumes">
@@ -1222,6 +1329,7 @@ function VolumesTab({ volumes }: { volumes: DockerVolume[] }) {
                 <th scope="col">Driver</th>
                 <th scope="col">Scope</th>
                 <th scope="col">Mountpoint</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -1234,6 +1342,19 @@ function VolumesTab({ volumes }: { volumes: DockerVolume[] }) {
                   <td data-label="Scope"><span style={{ fontSize: 12 }}>{volume.scope || "n/a"}</span></td>
                   <td data-label="Mountpoint">
                     <span className="mono muted" style={{ fontSize: 11, overflowWrap: "anywhere" }}>{volume.mountpoint || "n/a"}</span>
+                  </td>
+                  <td data-label="Actions">
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <IconButton
+                        label={`Remove volume ${volume.name}`}
+                        title={writeReason ?? `Remove ${volume.name}`}
+                        disabled={!canWrite}
+                        onClick={() => onRemove(volume)}
+                        style={{ color: "var(--danger)" }}
+                      >
+                        <Trash2 size={13} />
+                      </IconButton>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1251,7 +1372,26 @@ function VolumesTab({ volumes }: { volumes: DockerVolume[] }) {
   );
 }
 
-function NetworksTab({ networks }: { networks: DockerNetwork[] }) {
+function NetworksTab({
+  networks,
+  canWrite,
+  canPrune,
+  onRemove,
+  onPrune,
+}: {
+  networks: DockerNetwork[];
+  canWrite: boolean;
+  canPrune: boolean;
+  onRemove: (network: DockerNetwork) => void;
+  onPrune: () => void;
+}) {
+  const writeReason = canWrite ? undefined : scopeReason("networks:write");
+  const pruneReason = !canPrune
+    ? scopeReason("networks:prune")
+    : networks.length === 0
+      ? "No networks to prune."
+      : "Remove unused networks from this host.";
+  const systemNetworks = new Set(["bridge", "host", "none", "docker_gwbridge", "ingress"]);
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1260,7 +1400,9 @@ function NetworksTab({ networks }: { networks: DockerNetwork[] }) {
           <h3>Networks</h3>
           <Badge>{networks.length}</Badge>
         </div>
-        <span className="muted" style={{ fontSize: 11 }}>Read-only</span>
+        <Button size="sm" variant="ghost" onClick={onPrune} disabled={!canPrune || networks.length === 0} title={pruneReason}>
+          <Trash2 size={12} /> Prune
+        </Button>
       </div>
       {networks.length ? (
         <div className="table-wrap" style={{ borderRadius: 0 }}>
@@ -1272,27 +1414,44 @@ function NetworksTab({ networks }: { networks: DockerNetwork[] }) {
                 <th scope="col">Scope</th>
                 <th scope="col">Internal</th>
                 <th scope="col">IPv6</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
-              {networks.map((network) => (
-                <tr key={network.id}>
-                  <td data-label="Name">
-                    <div style={{ display: "grid", gap: 2 }}>
-                      <strong className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{network.name}</strong>
-                      <span className="mono muted" style={{ fontSize: 10.5 }}>{shortId(network.id, 12)}</span>
-                    </div>
-                  </td>
-                  <td data-label="Driver"><span className="chip">{network.driver === "null" ? "n/a" : network.driver}</span></td>
-                  <td data-label="Scope"><span style={{ fontSize: 12 }}>{network.scope}</span></td>
-                  <td data-label="Internal">
-                    <Badge tone={network.internal ? "warn" : "default"}>{network.internal ? "Yes" : "No"}</Badge>
-                  </td>
-                  <td data-label="IPv6">
-                    <Badge tone={network.ipv6 ? "info" : "default"}>{network.ipv6 ? "Yes" : "No"}</Badge>
-                  </td>
-                </tr>
-              ))}
+              {networks.map((network) => {
+                const managed = systemNetworks.has(network.name);
+                return (
+                  <tr key={network.id}>
+                    <td data-label="Name">
+                      <div style={{ display: "grid", gap: 2 }}>
+                        <strong className="mono" style={{ fontSize: 12, fontWeight: 600 }}>{network.name}</strong>
+                        <span className="mono muted" style={{ fontSize: 10.5 }}>{shortId(network.id, 12)}</span>
+                      </div>
+                    </td>
+                    <td data-label="Driver"><span className="chip">{network.driver === "null" ? "n/a" : network.driver}</span></td>
+                    <td data-label="Scope"><span style={{ fontSize: 12 }}>{network.scope}</span></td>
+                    <td data-label="Internal">
+                      <Badge tone={network.internal ? "warn" : "default"}>{network.internal ? "Yes" : "No"}</Badge>
+                    </td>
+                    <td data-label="IPv6">
+                      <Badge tone={network.ipv6 ? "info" : "default"}>{network.ipv6 ? "Yes" : "No"}</Badge>
+                    </td>
+                    <td data-label="Actions">
+                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                        <IconButton
+                          label={`Remove network ${network.name}`}
+                          title={managed ? "Docker-managed networks cannot be removed." : writeReason ?? `Remove ${network.name}`}
+                          disabled={!canWrite || managed}
+                          onClick={() => onRemove(network)}
+                          style={{ color: "var(--danger)" }}
+                        >
+                          <Trash2 size={13} />
+                        </IconButton>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1307,7 +1466,20 @@ function NetworksTab({ networks }: { networks: DockerNetwork[] }) {
   );
 }
 
-function DfTab({ rows }: { rows: DockerDfRow[] }) {
+function DfTab({
+  rows,
+  canPrune,
+  onPrune,
+}: {
+  rows: DockerDfRow[];
+  canPrune: boolean;
+  onPrune: () => void;
+}) {
+  const pruneReason = !canPrune
+    ? scopeReason("system:prune")
+    : rows.length === 0
+      ? "No Docker data to prune."
+      : "Remove stopped containers, unused networks, dangling images, and build cache.";
   return (
     <section className="panel">
       <div className="panel-header">
@@ -1316,9 +1488,10 @@ function DfTab({ rows }: { rows: DockerDfRow[] }) {
           <h3>System DF</h3>
           <Badge>{rows.length}</Badge>
         </div>
-        <span className="muted" style={{ fontSize: 11 }}>Read-only</span>
+        <Button size="sm" variant="ghost" onClick={onPrune} disabled={!canPrune || rows.length === 0} title={pruneReason}>
+          <Trash2 size={12} /> Prune
+        </Button>
       </div>
-      <NoteBar>Read-only. Docker prune is not exposed in this build.</NoteBar>
       {rows.length ? (
         <div className="table-wrap" style={{ borderRadius: 0 }}>
           <table className="data-table" aria-label="Docker disk usage">
@@ -1372,26 +1545,6 @@ function DfTab({ rows }: { rows: DockerDfRow[] }) {
         />
       )}
     </section>
-  );
-}
-
-function NoteBar({ children }: { children: ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 8,
-        padding: "9px 14px",
-        borderBottom: "1px solid var(--border)",
-        background: "var(--surface-2)",
-        color: "var(--muted)",
-        fontSize: 11.5,
-      }}
-    >
-      <Info size={13} style={{ flex: "none", marginTop: 1 }} />
-      <span>{children}</span>
-    </div>
   );
 }
 

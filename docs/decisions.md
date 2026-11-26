@@ -79,6 +79,7 @@
 | O13 | Standalone containers are inventoried and read-only | The operator wants edits limited to containers and stacks that Cetus owns. Keeps Compose primary and avoids lifecycle changes outside the stack directory. |
 | O14 | The Cetus worker stack is hidden from fleet lists, sweeps, and bulk updates | Cetus must not update the process that runs Cetus. Direct stack URLs still work. |
 | O15 | Remote stack files use explicit `compose.write` and delete messages with base hash checks | Worker remains the source of truth, and stale edits are rejected instead of overwriting. |
+| O16 | Docker prune and resource removal are exposed with explicit confirmation and audit | Operators can reclaim space from the UI; destructive actions use scoped, structured commands instead of a shell. |
 
 ## Delivery
 

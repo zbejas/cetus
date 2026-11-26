@@ -408,6 +408,22 @@ export interface DockerDfRow {
   reclaimable: string;
 }
 
+export type MaintenanceResource = "image" | "volume" | "network" | "container" | "builder" | "system";
+export type MaintenanceAction = "remove" | "prune";
+
+export interface MaintenanceInput {
+  resource: MaintenanceResource;
+  action: MaintenanceAction;
+  target?: string;
+  all?: boolean;
+  volumes?: boolean;
+}
+
+export interface MaintenanceResult {
+  ok: true;
+  output: string;
+}
+
 export interface HostInventory {
   host: HostSummary;
   info: DockerInfo | null;

@@ -86,6 +86,8 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 | Worker to manager | `compose.written` | Request ID, new compose and env text, hashes, or a conflict error |
 | Manager to worker | `container.action` | Request ID, container ID, and a start, stop, restart, pause, unpause, or remove action |
 | Worker to manager | `container.actioned` | Request ID, command output, or an error |
+| Manager to worker | `maintenance` | Validated image, volume, network, container, builder, or system maintenance |
+| Worker to manager | `maintenance.result` | Output or error after a fresh snapshot |
 | Manager to worker | `update-check` | Request ID and a batch of stack names and compose files |
 | Worker to manager | `update-check.result` | Request ID and one registry result per stack |
 | Manager to worker | `logs.request` | Stack name or container ID, tail count, timestamps, request ID |
@@ -116,6 +118,7 @@ The socket carries JSON messages. Elysia parses JSON before the handler, so the 
 - Remote compose and env edits through `compose.write` and `compose.written`. The worker validates YAML, snapshots the previous compose file under `.cetus/snapshots`, and writes atomically. A stale `baseHash` returns a conflict instead of overwriting.
 - Remote stack delete. The worker runs `compose down`, snapshots the compose file, and moves the stack directory to `data/trash` on the worker. The manager removes the index row after the operation succeeds.
 - Managed container start, stop, restart, pause, unpause, and remove through `container.action` and `container.actioned`. The worker rejects standalone containers without a Compose project label.
+- Remote image, volume, network, container, builder, and system maintenance through `maintenance` and `maintenance.result`. The worker sends a fresh snapshot after a successful action.
 - Remote registry digest checks and scheduled auto-updates through `update-check` and `auto-update`.
 - Per-host registry credentials through `registry.auth`. The worker writes `<data>/docker/config.json` with mode `0600`, merges a visible host `~/.docker/config.json` under the Cetus credentials, points `DOCKER_CONFIG` at that directory, and uses it for digest checks and image pulls. The manager sends the full Cetus replacement at enrollment and whenever a credential changes.
 - Cetus version reporting. The worker sends `cetusVersion` and `selfUpdateSupported` in its snapshot info, so the host page and dashboard can flag an out-of-date worker.

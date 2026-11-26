@@ -71,6 +71,12 @@ MCP and REST mutations write an audit entry with the actor, target, action, and 
 
 `GET /api/audit/export?format=csv|json` requires `audit:export` and returns up to 20,000 recent entries. The Settings Audit tab downloads the currently filtered rows through the same endpoint. Exports are audited.
 
+### Docker maintenance
+
+`POST /api/hosts/:id/maintenance` runs one validated maintenance action on a local or worker host. The body selects `resource` (`image`, `volume`, `network`, `container`, `builder`, `system`), `action` (`remove` or `prune`), and an optional `target`. Remove uses `images:write`, `volumes:write`, or `networks:write`; prune uses `images:prune`, `volumes:prune`, `networks:prune`, or `system:prune`. Every action is audited. The host page uses the same route for image, volume, network, container, and system cleanup.
+
+Prune actions follow Docker's unused filters. Volume removal and volume-inclusive system prune can delete data, so the UI requires an explicit confirmation. The API accepts only the structured resource and target fields; it never accepts free-form Docker arguments.
+
 ### Errors
 
 Errors use a JSON body with a stable code:

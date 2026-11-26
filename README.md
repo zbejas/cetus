@@ -56,6 +56,7 @@ One Bun server, one React SPA, file-owned Compose stacks, and every Docker host 
 - **File-first.** Every stack stays on disk under the stacks directory. Cetus edits bytes, preserves comments, and keeps snapshots. SQLite is an index, not the source of truth.
 - **One fleet.** The manager runs its own Docker host and accepts outbound workers. Enroll a remote host without opening an inbound port.
 - **Real Compose.** Edit compose and env files, deploy, update, delete to trash, run service and container actions, and read live logs on local and worker hosts. Fleet and per-stack update schedules support service exclusions.
+- **Docker maintenance.** Prune unused images, volumes, networks, containers, and build cache on local and worker hosts, with scoped removal and audit.
 - **Scoped access.** Password and OIDC sign-in, roles, invites, API keys with host and stack targets, audit, and notifications.
 - **Backups.** A consistent SQLite copy, the master key, and the stack files in one archive. Schedule daily, download, and restore on the next start.
 - **Agent-ready.** MCP runs over the same scoped keys, so an AI client sees exactly what the key allows. The generated OpenAPI reference is at `/api/docs`.
