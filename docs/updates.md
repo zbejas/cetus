@@ -72,7 +72,7 @@ compose services -> running container image -> local RepoDigests
 
 - `POST /api/updates/apply` collects every visible stack with a pending update, stores the work in the `update_queue` table, and starts the first entry.
 - The manager starts one stack at a time by default. Change `CETUS_UPDATE_QUEUE_CONCURRENCY` to 1-8 when a host has enough headroom.
-- A queue entry stores the stack, host, resolved update config, actor name, and position. The queue survives a manager restart. Entries that were running during a restart are marked failed with a readable reason.
+- A queue entry stores the stack, host, resolved update config, actor name, and position. The queue survives a manager restart. Entries that were running during a restart are marked failed unless their operation already finished. A manager or worker self-update is reconciled to the operation result when the helper reports back.
 - The queue starts the next entry when the operation finishes. It skips a stack with another running operation and skips a stack when the digest cache no longer has changed services.
 - Operators can reorder queued entries with the arrows on the Dashboard queue panel. Running entries stay at the front. Removing a queued entry skips it.
 - Completed entries are pruned after seven days, or when more than 100 remain.
