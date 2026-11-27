@@ -23,6 +23,7 @@ import { useMe } from "../lib/queries";
 import { useToast } from "./Toast";
 import { CommandPalette } from "./CommandPalette";
 import { Logo } from "./Logo";
+import { PageActionsHost } from "./PageActions";
 import { Button, IconButton } from "./ui";
 import { cn } from "../lib/format";
 
@@ -158,6 +159,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="topbar-title">
             <h1>{pageLabel(pathname)}</h1>
           </div>
+          <PageActionsHost className="topbar-page-actions" />
           <div className="topbar-actions">
             <button className="search-trigger" onClick={() => setPaletteOpen(true)} aria-label="Search">
               <Search size={14} />

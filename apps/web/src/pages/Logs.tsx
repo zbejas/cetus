@@ -18,6 +18,7 @@ import { useLogSources } from "../lib/queries";
 import { useToast } from "../components/Toast";
 import { Button, EmptyState, Skeleton } from "../components/ui";
 import { LogViewer, type LogViewerSource } from "../components/LogViewer";
+import { PageActions } from "../components/PageActions";
 import { fuzzyScore } from "../lib/logs";
 import type { LogSource } from "@shared/types";
 
@@ -196,6 +197,26 @@ export function LogsPage() {
 
   return (
     <div className="logs-page">
+      <PageActions>
+        <Button
+          variant="ghost"
+          className="logs-sources-toggle"
+          onClick={() => setSourcesOpen((value) => !value)}
+          aria-expanded={sourcesOpen}
+          aria-label={sourcesOpen ? "Hide containers" : "Show containers"}
+        >
+          <PanelLeft size={14} /> <span className="logs-action-label">Containers</span>
+          <ChevronDown size={13} data-open={sourcesOpen} />
+        </Button>
+        <Button
+          variant="ghost"
+          onClick={() => setSelected([])}
+          disabled={!selected.length}
+          aria-label="Clear all log panes"
+        >
+          <X size={13} /> <span className="logs-action-label">Clear all</span>
+        </Button>
+      </PageActions>
       {focusedSource ? (
         <div className="logs-focus-bar">
           <div className="logs-focus-title">
@@ -208,36 +229,6 @@ export function LogsPage() {
           </Button>
         </div>
       ) : null}
-      <div className="logs-page-head">
-        <div>
-          <h1>Logs</h1>
-          <p>
-            {allSources.length
-              ? `${allSources.length} containers across ${hosts.length} ${hosts.length === 1 ? "host" : "hosts"} · ${runningCount} running`
-              : "Live tails from every container in the fleet."}
-          </p>
-        </div>
-        <div className="logs-head-actions">
-          <Button
-            variant="ghost"
-            className="logs-sources-toggle"
-            onClick={() => setSourcesOpen((value) => !value)}
-            aria-expanded={sourcesOpen}
-            aria-label={sourcesOpen ? "Hide containers" : "Show containers"}
-          >
-            <PanelLeft size={14} /> <span className="logs-action-label">Containers</span>
-            <ChevronDown size={13} data-open={sourcesOpen} />
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => setSelected([])}
-            disabled={!selected.length}
-            aria-label="Clear all log panes"
-          >
-            <X size={13} /> <span className="logs-action-label">Clear all</span>
-          </Button>
-        </div>
-      </div>
 
       <div className="logs-layout" data-sources-open={sourcesOpen}>
         <aside className="logs-sources" aria-label="Container sources">
