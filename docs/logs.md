@@ -11,6 +11,7 @@ Cetus logs are a clean-room take on the log-viewer category, with Dozzle as the 
 - Detects Docker timestamps, strips ANSI escapes, parses Compose service prefixes, and recognizes JSON `level` or `severity` fields.
 - Toggles timestamps and line wrapping, pauses without dropping output, jumps back to the live edge, copies, downloads, and clears.
 - Uses the full application width on `/logs` and lets any pane fill the workspace with one click. `Show all panes` restores the split view.
+- Keeps page actions (`Containers`, `Clear all`) in the shared top bar, so the log workspace starts directly under the app header.
 - Keeps a 5,000-line ring buffer per pane. Logs are not written to disk by the viewer.
 - Clicking a container replaces the default pane. Hover a container row and use the new-panel button to add another pane. Close panes from the pane header.
 - Reconnects a live stream automatically after a network error or clean server close, preserving the lines already on screen.

@@ -384,6 +384,17 @@ a {
   gap: 8px;
 }
 
+.topbar-page-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.topbar-page-actions:empty {
+  display: none;
+}
+
 .search-trigger {
   display: flex;
   align-items: center;
@@ -1206,33 +1217,6 @@ a {
 .logs-focus-title span {
   color: var(--muted);
   font-size: 11px;
-}
-
-.logs-page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.logs-page-head h1 {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 680;
-  letter-spacing: -0.04em;
-}
-
-.logs-page-head p {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-.logs-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
 }
 
 .logs-sources-toggle {
@@ -2257,27 +2241,6 @@ a {
   .logs-page {
     height: calc(100dvh - 162px);
     gap: 10px;
-  }
-
-  .logs-page-head {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 7px;
-  }
-
-  .logs-page-head h1 {
-    font-size: 23px;
-  }
-
-  .logs-page-head p {
-    margin-top: 2px;
-    font-size: 11px;
-  }
-
-  .logs-head-actions {
-    width: 100%;
-    justify-content: flex-start;
-    gap: 4px;
   }
 
   .logs-action-label {

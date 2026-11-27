@@ -98,7 +98,7 @@ test("signs in and opens the stack cockpit", async ({ page }) => {
 test("tails container logs and filters them", async ({ page }) => {
   await login(page);
   await page.goto("/logs");
-  await expect(page.locator(".logs-page-head h1")).toHaveText("Logs");
+  await expect(page.locator(".topbar-title h1")).toHaveText("Logs");
   await expect(page.locator(".log-pane")).toHaveCount(1);
 
   if (await page.locator(".log-row").count() === 0) {

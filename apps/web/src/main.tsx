@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 import { ToastProvider } from "./components/Toast";
+import { PageActionsProvider } from "./components/PageActions";
 import { applyStoredPalette } from "./lib/palette";
 import "./styles.css";
 
@@ -23,7 +24,9 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <RouterProvider router={router} />
+        <PageActionsProvider>
+          <RouterProvider router={router} />
+        </PageActionsProvider>
       </ToastProvider>
     </QueryClientProvider>
   </StrictMode>,
